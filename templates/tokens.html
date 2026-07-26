@@ -7,15 +7,15 @@
 
 <div class="stats-bar">
     <div class="stat">
-        <div class="stat-num">{{ stats.total_accounts }}</div>
+        <div class="stat-num">{{ stats.total }}</div>
         <div class="stat-label">总账号数</div>
     </div>
     <div class="stat">
-        <div class="stat-num" style="color: #f44336;">{{ stats.expired_tokens }}</div>
+        <div class="stat-num" style="color: #f44336;">{{ expiring|selectattr('days_left', 'le', 0)|list|length }}</div>
         <div class="stat-label">已过期</div>
     </div>
     <div class="stat">
-        <div class="stat-num" style="color: #ff9800;">{{ stats.expiring_soon_tokens }}</div>
+        <div class="stat-num" style="color: #ff9800;">{{ expiring|selectattr('days_left', 'gt', 0)|list|length }}</div>
         <div class="stat-label">即将过期 (14天内)</div>
     </div>
 </div>

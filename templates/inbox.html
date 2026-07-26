@@ -34,9 +34,9 @@
         <tbody>
         {% for em in emails %}
             <tr>
-                <td>{{ em['sender'][:50] }}</td>
+                <td>{{ em['from_addr'][:50] }}</td>
                 <td><a href="/email/{{ em['id'] }}">{{ em['subject'][:80] or '(无主题)' }}</a></td>
-                <td>{{ em['received_at'] or '-' }}</td>
+                <td>{{ em['date'] or '-' }}</td>
                 <td><span class="badge">{{ em['folder'] }}</span></td>
             </tr>
         {% else %}

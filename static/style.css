@@ -70,6 +70,8 @@ td a:hover { text-decoration: underline; }
 .badge-disabled { background: rgba(243,156,18,0.15); color: var(--orange); }
 .badge-ok { background: rgba(46,204,113,0.15); color: var(--green); }
 .badge-warn { background: rgba(243,156,18,0.15); color: var(--orange); }
+.badge-google { background: rgba(66,133,244,0.15); color: #4285f4; }
+.badge-ms { background: rgba(0,120,212,0.15); color: #0078d4; }
 .status-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
 .status-error { background: rgba(231,76,60,0.2); color: #f44336; }
 

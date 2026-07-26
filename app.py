@@ -1,6 +1,7 @@
 """
-Outlook 邮箱批量管理器 - FastAPI 应用
-功能：导入账号、OAuth2 IMAP 取件、Web 界面查看邮件、登录认证、令牌过期管理
+OAuth2 邮箱批量管理器 - FastAPI 应用
+支持 Outlook/Hotmail/Gmail 等 OAuth2 IMAP 邮箱。
+功能：导入账号、自动识别供应商、OAuth2 IMAP 取件、Web 界面查看邮件、登录认证、令牌过期管理
 """
 import asyncio
 import logging
@@ -36,7 +37,7 @@ async def lifespan(app: FastAPI):
     logger.info("Database initialized")
     yield
 
-app = FastAPI(title="Outlook Mail Manager", lifespan=lifespan)
+app = FastAPI(title="OAuth2 Mail Manager", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
@@ -98,7 +99,7 @@ async def login_page(request: Request):
 
 @app.post("/login")
 async def do_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    if await db.verify_user(username, password):
+    if db.verify_user(username, password):
         resp = RedirectResponse("/", status_code=302)
         _create_session(resp, username)
         return resp
@@ -129,13 +130,13 @@ async def change_password(request: Request, old_password: str = Form(...), new_p
     token = _get_session_token(request)
     username = _sessions.get(token, {}).get("user", "admin")
     
-    if not await db.verify_user(username, old_password):
+    if not db.verify_user(username, old_password):
         return templates.TemplateResponse(request, "password.html", {"error": "旧密码错误"})
     
     if len(new_password) < 6:
         return templates.TemplateResponse(request, "password.html", {"error": "密码至少6位"})
     
-    await db.change_password(username, new_password)
+    db.change_password(username, new_password)
     return templates.TemplateResponse(request, "password.html", {"success": "密码已修改"})
 
 
@@ -186,12 +187,27 @@ async def do_import(request: Request, text: str = Form(""), file: UploadFile = F
 async def token_status_page(request: Request):
     """Token expiration overview page."""
     _require_auth(request)
-    expiring = await db.get_expiring_accounts(warning_days=30)
+    from datetime import datetime, timedelta
+    now = datetime.now()
+    all_accounts = await db.get_all_active_accounts()
     stats = await db.get_stats()
+
+    TOKEN_LIFETIME_DAYS = 90
+    expiring = []
+    for acc in all_accounts:
+        if acc.get('token_created_at'):
+            created = datetime.fromisoformat(acc['token_created_at'])
+            expires_at = created + timedelta(days=TOKEN_LIFETIME_DAYS)
+            days_left = (expires_at - now).days
+            acc['days_left'] = days_left
+            if days_left <= 30:
+                expiring.append(acc)
+    expiring.sort(key=lambda x: x['days_left'])
+
     return templates.TemplateResponse(request, "tokens.html", {
         "expiring": expiring,
         "stats": stats,
-        "token_lifetime_days": db.TOKEN_LIFETIME_DAYS,
+        "token_lifetime_days": TOKEN_LIFETIME_DAYS,
     })
 
 
@@ -234,7 +250,10 @@ async def fetch_single(request: Request, account_id: int):
     try:
         result, new_refresh_token = await mail_fetcher.check_account(
             account['email'], account['password'],
-            account['client_id'], account['refresh_token'], limit=50
+            account['client_id'], account['refresh_token'],
+            provider_key=account.get('provider', 'microsoft'),
+            client_secret=account.get('client_secret', ''),
+            limit=50
         )
         total_saved = 0
         for folder, emails in result.items():
@@ -268,7 +287,10 @@ async def fetch_all(request: Request):
             try:
                 result, new_refresh_token = await mail_fetcher.check_account(
                     acc['email'], acc['password'],
-                    acc['client_id'], acc['refresh_token'], limit=30
+                    acc['client_id'], acc['refresh_token'],
+                    provider_key=acc.get('provider', 'microsoft'),
+                    client_secret=acc.get('client_secret', ''),
+                    limit=30
                 )
                 total = 0
                 for folder, emails in result.items():

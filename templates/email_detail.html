@@ -8,9 +8,9 @@
     </div>
 
     <div class="email-meta">
-        <div><strong>发件人：</strong>{{ email['sender'] }}</div>
+        <div><strong>发件人：</strong>{{ email['from_addr'] }}</div>
         <div><strong>主　题：</strong>{{ email['subject'] or '(无主题)' }}</div>
-        <div><strong>时　间：</strong>{{ email['received_at'] or '-' }}</div>
+        <div><strong>时　间：</strong>{{ email['date'] or '-' }}</div>
         <div><strong>文件夹：</strong><span class="badge">{{ email['folder'] }}</span></div>
     </div>
 

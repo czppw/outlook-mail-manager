@@ -1,8 +1,9 @@
 """
-IMAP fetcher with OAuth2 (XOAUTH2) for Outlook/Microsoft accounts.
+OAuth2 Mail Fetcher - 通用批量邮箱取件工具
+支持 Outlook/Hotmail/Gmail 等 OAuth2 IMAP 邮箱。
 
-Outlook IMAP server: outlook.office365.com:993
-OAuth2 flow: uses refresh_token to get access_token, then authenticates via SASL XOAUTH2.
+自动识别邮箱供应商，选择正确的 IMAP 服务器和 OAuth2 端点。
+认证方式：SASL XOAUTH2（所有主流邮箱都支持）。
 """
 import imaplib
 import json
@@ -11,52 +12,96 @@ import email
 import asyncio
 import logging
 from email.header import decode_header
-from datetime import datetime
 from urllib.request import Request, urlopen
 from urllib.error import URLError, HTTPError
 
 logger = logging.getLogger(__name__)
 
-IMAP_HOST = "outlook.office365.com"
-IMAP_PORT = 993
-TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+# ─────────── 供应商配置 ───────────
+PROVIDERS = {
+    "microsoft": {
+        "name": "Microsoft",
+        "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com", "office365.com", "outlook.cn"],
+        "imap_host": "outlook.office365.com",
+        "imap_port": 993,
+        "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+        "scope": "https://outlook.office365.com/IMAP.AccessAsUser.All offline_access",
+        "needs_client_secret": False,
+    },
+    "google": {
+        "name": "Google",
+        "domains": ["gmail.com", "googlemail.com"],
+        "imap_host": "imap.gmail.com",
+        "imap_port": 993,
+        "token_url": "https://oauth2.googleapis.com/token",
+        "scope": "https://mail.google.com/",
+        "needs_client_secret": True,
+    },
+}
 
-# Default scope for IMAP access
-IMAP_SCOPE = "https://outlook.office365.com/IMAP.AccessAsUser.All offline_access"
+
+def detect_provider(email_addr: str) -> str:
+    """根据邮箱域名自动识别供应商。"""
+    domain = email_addr.split("@")[-1].lower() if "@" in email_addr else ""
+    for provider_key, provider in PROVIDERS.items():
+        if domain in provider["domains"]:
+            return provider_key
+    # 默认用微软（很多企业邮箱也走 outlook.office365.com）
+    return "microsoft"
 
 
-def get_access_token(client_id: str, refresh_token: str) -> tuple[str, str]:
-    """Exchange refresh_token for access_token via OAuth2.
-    Returns (access_token, new_refresh_token).
-    Microsoft rotates refresh_tokens on each use.
+def get_provider_config(provider_key: str) -> dict:
+    """获取供应商配置。"""
+    return PROVIDERS.get(provider_key, PROVIDERS["microsoft"])
+
+
+def get_access_token(client_id: str, refresh_token: str, provider_key: str = "microsoft",
+                     client_secret: str = "") -> tuple[str, str]:
+    """用 refresh_token 换取 access_token。
+    返回 (access_token, new_refresh_token)。
+    微软和 Gmail 都会在每次刷新时轮换 refresh_token。
     """
-    data = f"client_id={client_id}&grant_type=refresh_token&refresh_token={refresh_token}&scope={IMAP_SCOPE}"
-    req = Request(TOKEN_URL, data=data.encode(), method="POST")
+    provider = get_provider_config(provider_key)
+
+    data = {
+        "client_id": client_id,
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "scope": provider["scope"],
+    }
+    # Gmail 需要 client_secret；微软公共客户端不需要
+    if client_secret and provider.get("needs_client_secret"):
+        data["client_secret"] = client_secret
+    # 即使不是必须的，如果提供了也带上（有些自定义应用需要）
+    elif client_secret:
+        data["client_secret"] = client_secret
+
+    body = "&".join(f"{k}={v}" for k, v in data.items())
+    req = Request(provider["token_url"], data=body.encode(), method="POST")
     req.add_header("Content-Type", "application/x-www-form-urlencoded")
     try:
         with urlopen(req, timeout=15) as resp:
             result = json.loads(resp.read())
             access_token = result.get("access_token")
-            # Microsoft may return a new refresh_token (rotation)
             new_refresh_token = result.get("refresh_token", refresh_token)
             if not access_token:
                 raise Exception("No access_token in response")
             return access_token, new_refresh_token
     except HTTPError as e:
-        body = e.read().decode() if e.fp else ""
-        raise Exception(f"Token refresh failed ({e.code}): {body[:200]}")
+        body_text = e.read().decode() if e.fp else ""
+        raise Exception(f"Token refresh failed ({e.code}): {body_text[:200]}")
     except URLError as e:
         raise Exception(f"Token refresh network error: {e.reason}")
 
 
 def build_xoauth2_auth(user: str, access_token: str) -> bytes:
-    """Build SASL XOAUTH2 authentication string."""
+    """构建 SASL XOAUTH2 认证字符串。"""
     auth_str = f"user={user}\x01auth=Bearer {access_token}\x01\x01"
     return base64.b64encode(auth_str.encode()).decode().encode()
 
 
 def decode_mime_header(raw: str) -> str:
-    """Decode MIME encoded header."""
+    """解码 MIME 编码的邮件头。"""
     if not raw:
         return ""
     parts = decode_header(raw)
@@ -70,7 +115,7 @@ def decode_mime_header(raw: str) -> str:
 
 
 def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -> list[dict]:
-    """Fetch emails from a specific folder."""
+    """从指定文件夹获取邮件。"""
     emails = []
     try:
         status, _ = imap.select(folder, readonly=True)
@@ -83,7 +128,6 @@ def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -
             return emails
 
         msg_ids = data[0].split()
-        # Get latest N emails
         msg_ids = msg_ids[-limit:] if len(msg_ids) > limit else msg_ids
 
         for msg_id in msg_ids:
@@ -94,7 +138,6 @@ def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -
                 raw_email = msg_data[0][1]
                 msg = email.message_from_bytes(raw_email)
 
-                # Get plain text body
                 body = ""
                 body_html = ""
                 if msg.is_multipart():
@@ -124,7 +167,7 @@ def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -
                     'uid': msg_id.decode(),
                     'from': decode_mime_header(msg.get('From', '')),
                     'subject': decode_mime_header(msg.get('Subject', '')),
-                    'body': body[:50000],  # Limit body size
+                    'body': body[:50000],
                     'body_html': body_html[:100000],
                     'date': msg.get('Date', ''),
                 })
@@ -138,22 +181,30 @@ def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -
 
 
 def fetch_all_emails(email_addr: str, password: str, client_id: str, refresh_token: str,
+                     provider_key: str = "microsoft", client_secret: str = "",
                      limit: int = 50) -> tuple[dict, str]:
-    """Fetch emails from multiple folders.
-    Returns (results_dict, new_refresh_token).
+    """获取多个文件夹的邮件。
+    返回 (results_dict, new_refresh_token)。
     """
-    access_token, new_refresh_token = get_access_token(client_id, refresh_token)
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+    provider = get_provider_config(provider_key)
+    access_token, new_refresh_token = get_access_token(
+        client_id, refresh_token, provider_key, client_secret
+    )
+    imap = imaplib.IMAP4_SSL(provider["imap_host"], provider["imap_port"])
     auth_string = build_xoauth2_auth(email_addr, access_token)
 
     try:
         imap.authenticate("XOAUTH2", lambda x: auth_string)
-        logger.info(f"Authenticated as {email_addr}")
+        logger.info(f"Authenticated as {email_addr} via {provider['name']}")
     except imaplib.IMAP4.error as e:
         raise Exception(f"XOAUTH2 auth failed: {e}")
 
     results = {}
-    folders = ['INBOX', 'JUNK']  # 收件箱 + 垃圾邮件
+    # 微软系用 JUNK，Gmail 用 [Gmail]/Spam
+    if provider_key == "google":
+        folders = ['INBOX', '[Gmail]/Spam']
+    else:
+        folders = ['INBOX', 'JUNK']
 
     for folder in folders:
         try:
@@ -172,19 +223,23 @@ def fetch_all_emails(email_addr: str, password: str, client_id: str, refresh_tok
 
 
 async def check_account(email_addr: str, password: str, client_id: str, refresh_token: str,
+                        provider_key: str = "microsoft", client_secret: str = "",
                         limit: int = 50) -> tuple[dict, str]:
-    """Async wrapper. Returns (emails_by_folder, new_refresh_token)."""
+    """异步接口。返回 (emails_by_folder, new_refresh_token)。"""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
-        lambda: fetch_all_emails(email_addr, password, client_id, refresh_token, limit=limit)
+        lambda: fetch_all_emails(email_addr, password, client_id, refresh_token,
+                                 provider_key, client_secret, limit=limit)
     )
 
 
-def list_folders(email_addr: str, password: str, client_id: str, refresh_token: str) -> list[str]:
-    """List all available IMAP folders."""
-    access_token, _ = get_access_token(client_id, refresh_token)
-    imap = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+def list_folders(email_addr: str, password: str, client_id: str, refresh_token: str,
+                 provider_key: str = "microsoft", client_secret: str = "") -> list[str]:
+    """列出所有可用的 IMAP 文件夹。"""
+    provider = get_provider_config(provider_key)
+    access_token, _ = get_access_token(client_id, refresh_token, provider_key, client_secret)
+    imap = imaplib.IMAP4_SSL(provider["imap_host"], provider["imap_port"])
     auth_string = build_xoauth2_auth(email_addr, access_token)
     try:
         imap.authenticate("XOAUTH2", lambda x: auth_string)
