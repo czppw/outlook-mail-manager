@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}{{ account['email'] }} - 收件箱{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>📬 {{ account['email'] }}</h2>
+        <div>
+            <button class="btn btn-primary" onclick="fetchAccount({{ account['id'] }})">🔄 取件</button>
+            <a href="/" class="btn">返回</a>
+        </div>
+    </div>
+
+    <div class="account-info">
+        <span class="badge badge-{{ account['status'] }}">{{ account['status'] }}</span>
+        <span>邮件: {{ account['mail_count'] or 0 }}</span>
+        <span>上次取件: {{ account['last_check'] or '未取件' }}</span>
+    </div>
+
+    <div class="folder-tabs">
+        <a href="/account/{{ account['id'] }}" class="tab {{ 'active' if not folder else '' }}">全部</a>
+        <a href="/account/{{ account['id'] }}?folder=INBOX" class="tab {{ 'active' if folder == 'INBOX' else '' }}">📥 收件箱</a>
+        <a href="/account/{{ account['id'] }}?folder=JUNK" class="tab {{ 'active' if folder == 'JUNK' else '' }}">🗑️ 垃圾邮件</a>
+    </div>
+
+    <table>
+        <thead>
+            <tr>
+                <th>发件人</th>
+                <th>主题</th>
+                <th>时间</th>
+                <th>文件夹</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for em in emails %}
+            <tr>
+                <td>{{ em['sender'][:50] }}</td>
+                <td><a href="/email/{{ em['id'] }}">{{ em['subject'][:80] or '(无主题)' }}</a></td>
+                <td>{{ em['received_at'] or '-' }}</td>
+                <td><span class="badge">{{ em['folder'] }}</span></td>
+            </tr>
+        {% else %}
+            <tr><td colspan="4" class="empty">暂无邮件，点击上方「取件」按钮获取</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}<a href="?folder={{ folder }}&page={{ page-1 }}" class="btn btn-sm">← 上一页</a>{% endif %}
+        <span>第 {{ page }} / {{ total_pages }} 页 (共 {{ total }} 封)</span>
+        {% if page < total_pages %}<a href="?folder={{ folder }}&page={{ page+1 }}" class="btn btn-sm">下一页 →</a>{% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

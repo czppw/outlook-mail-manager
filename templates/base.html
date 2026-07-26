@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Outlook 邮箱管理{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav>
+        <div class="nav-inner">
+            <a href="/" class="logo">📧 Outlook 邮箱管理器</a>
+            <div class="nav-links">
+                <a href="/">账号列表</a>
+                <a href="/import">导入账号</a>
+                <a href="/tokens">令牌状态</a>
+                <a href="/password">修改密码</a>
+                <a href="/logout" style="color: #f44336;">退出</a>
+            </div>
+        </div>
+    </nav>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+    <script>
+        async function fetchAccount(id) {
+            const btn = event.target;
+            btn.disabled = true; btn.textContent = '取件中...';
+            try {
+                const r = await fetch(`/fetch/${id}`, {method:'POST'});
+                const d = await r.json();
+                if(d.ok) { btn.textContent = `✓ ${d.fetched}封`; btn.style.color='#4caf50'; }
+                else { btn.textContent = '✗ 失败'; btn.style.color='#f44336'; }
+            } catch(e) { btn.textContent = '✗ 错误'; btn.style.color='#f44336'; }
+            setTimeout(() => location.reload(), 1500);
+        }
+        async function fetchAll() {
+            const btn = document.getElementById('fetch-all-btn');
+            btn.disabled = true; btn.textContent = '批量取件中...';
+            try {
+                const r = await fetch('/fetch-all', {method:'POST'});
+                const d = await r.json();
+                alert(`成功: ${d.success}, 失败: ${d.failed}, 邮件: ${d.total_emails}`);
+            } catch(e) { alert('Error: ' + e); }
+            location.reload();
+        }
+    </script>
+</body>
+</html>

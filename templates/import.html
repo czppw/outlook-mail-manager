@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}导入账号{% endblock %}
+{% block content %}
+<div class="card">
+    <h2>📥 导入邮箱账号</h2>
+    <p class="hint">格式：每行一个账号，用 <code>----</code> 分隔</p>
+    <p class="hint"><code>邮箱----密码----client_id----refresh_token</code></p>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    {% if result %}
+    <div class="alert alert-success">
+        ✅ 新增 <strong>{{ result.added }}</strong> 个，跳过 <strong>{{ result.skipped }}</strong> 个重复
+        {% if result.errors %}
+        <br>❌ 错误：
+        <ul>
+        {% for e in result.errors[:10] %}
+            <li>{{ e }}</li>
+        {% endfor %}
+        {% if result.errors|length > 10 %}<li>...还有 {{ result.errors|length - 10 }} 条错误</li>{% endif %}
+        </ul>
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <form method="post" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>粘贴账号（每行一个）：</label>
+            <textarea name="text" rows="10" placeholder="email1@outlook.com----pass1----client_id1----refresh_token1
+email2@outlook.com----pass2----client_id2----refresh_token2"></textarea>
+        </div>
+
+        <div class="form-group">
+            <label>或上传文件（.txt）：</label>
+            <input type="file" name="file" accept=".txt,.csv">
+        </div>
+
+        <button type="submit" class="btn btn-primary">导入</button>
+        <a href="/" class="btn">返回</a>
+    </form>
+</div>
+{% endblock %}

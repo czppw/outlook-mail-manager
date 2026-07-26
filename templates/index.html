@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Outlook 邮箱管理 - 账号列表{% endblock %}
+{% block content %}
+{% if expiring %}
+<div class="alert alert-warning" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+    <span>⚠️ 有 <strong>{{ expiring|length }}</strong> 个账号令牌即将过期或已过期</span>
+    <a href="/tokens" class="btn btn-sm btn-warn">查看详情</a>
+</div>
+{% endif %}
+
+<div class="stats-bar">
+    <div class="stat">📊 总账号: <strong>{{ stats.total_accounts }}</strong></div>
+    <div class="stat active">✅ 活跃: <strong>{{ stats.active_accounts }}</strong></div>
+    <div class="stat error">❌ 异常: <strong>{{ stats.error_accounts }}</strong></div>
+    <div class="stat">📬 邮件总数: <strong>{{ stats.total_emails }}</strong></div>
+    <button id="fetch-all-btn" class="btn btn-primary" onclick="fetchAll()">🔄 全部取件</button>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h2>账号列表 ({{ total }})</h2>
+        <div style="display: flex; gap: 8px;">
+            <a href="/import" class="btn btn-sm">+ 导入账号</a>
+            <a href="/tokens" class="btn btn-sm">⏰ 令牌管理</a>
+        </div>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>令牌</th>
+                <th>邮件数</th>
+                <th>上次取件</th>
+                <th>最后错误</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for acc in accounts %}
+            <tr class="{{ 'row-error' if acc['status'] == 'error' else '' }} {{ 'row-disabled' if acc['status'] == 'disabled' else '' }}">
+                <td>{{ acc['id'] }}</td>
+                <td><a href="/account/{{ acc['id'] }}">{{ acc['email'] }}</a></td>
+                <td>
+                    <span class="badge badge-{{ acc['status'] }}">{{ acc['status'] }}</span>
+                </td>
+                <td>
+                    {% set token_created = acc['token_created_at'] %}
+                    {% if token_created %}
+                        {% set days_elapsed = ((now - token_created).days if now is defined else 0) %}
+                        <span class="badge badge-ok" title="创建于 {{ token_created }}">正常</span>
+                    {% else %}
+                        <span class="badge badge-warn">未知</span>
+                    {% endif %}
+                </td>
+                <td>{{ acc['mail_count'] or 0 }}</td>
+                <td>{{ acc['last_check'] or '-' }}</td>
+                <td class="error-text" title="{{ acc['last_error'] or '' }}">{{ (acc['last_error'] or '-')[:40] }}</td>
+                <td class="actions">
+                    <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }})">取件</button>
+                    <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="更新授权码">更新令牌</a>
+                    <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline">
+                        {% if acc['status'] == 'disabled' %}
+                            <input type="hidden" name="action" value="enable">
+                            <button class="btn btn-sm btn-success">启用</button>
+                        {% else %}
+                            <input type="hidden" name="action" value="disable">
+                            <button class="btn btn-sm btn-warn">禁用</button>
+                        {% endif %}
+                    </form>
+                    <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline"
+                          onsubmit="return confirm('确定删除该账号及所有邮件？')">
+                        <input type="hidden" name="action" value="delete">
+                        <button class="btn btn-sm btn-danger">删除</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}<a href="?page={{ page-1 }}" class="btn btn-sm">← 上一页</a>{% endif %}
+        <span>第 {{ page }} / {{ total_pages }} 页</span>
+        {% if page < total_pages %}<a href="?page={{ page+1 }}" class="btn btn-sm">下一页 →</a>{% endif %}
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

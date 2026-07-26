@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}更新令牌 - {{ account['email'] }}{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>🔑 更新 Refresh Token</h2>
+</div>
+
+<div class="card" style="max-width: 600px;">
+    <div class="account-info">
+        <span>📧 {{ account['email'] }}</span>
+        <span>创建于 {{ account['token_created_at'] or '未知' }}</span>
+    </div>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+        <p><strong>什么时候需要更新？</strong></p>
+        <ul style="margin: 8px 0 0 20px; font-size: 13px;">
+            <li>令牌过期（90天未取件）</li>
+            <li>取件报错 "Token refresh failed"</li>
+            <li>卖家给了新的授权码</li>
+        </ul>
+        <p style="margin-top: 8px;"><strong>自动续期：</strong>每次成功取件后，系统会自动保存微软返回的新令牌，无需手动更新。</p>
+    </div>
+
+    <form method="post" action="/account/{{ account['id'] }}/edit-token">
+        <div class="form-group">
+            <label>新的 Refresh Token（授权码）</label>
+            <textarea name="new_refresh_token" rows="4" required
+                      placeholder="粘贴新的 refresh_token..."></textarea>
+        </div>
+        <div style="display: flex; gap: 8px;">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a href="/" class="btn">取消</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

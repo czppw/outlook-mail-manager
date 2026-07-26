@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}{{ email['subject'] or '邮件详情' }}{% endblock %}
+{% block content %}
+<div class="card">
+    <div class="card-header">
+        <h2>📩 邮件详情</h2>
+        <a href="/account/{{ email['account_id'] }}" class="btn">← 返回</a>
+    </div>
+
+    <div class="email-meta">
+        <div><strong>发件人：</strong>{{ email['sender'] }}</div>
+        <div><strong>主　题：</strong>{{ email['subject'] or '(无主题)' }}</div>
+        <div><strong>时　间：</strong>{{ email['received_at'] or '-' }}</div>
+        <div><strong>文件夹：</strong><span class="badge">{{ email['folder'] }}</span></div>
+    </div>
+
+    <hr>
+
+    {% if email['body_html'] %}
+    <div class="email-body-html">
+        <iframe srcdoc="{{ email['body_html'] | e }}" sandbox="" style="width:100%;min-height:500px;border:1px solid #ddd;border-radius:4px;"></iframe>
+    </div>
+    {% elif email['body'] %}
+    <div class="email-body-plain">
+        <pre>{{ email['body'] }}</pre>
+    </div>
+    {% else %}
+    <p class="empty">（无邮件内容）</p>
+    {% endif %}
+</div>
+{% endblock %}

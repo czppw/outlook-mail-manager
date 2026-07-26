@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}令牌状态{% endblock %}
+{% block content %}
+<div class="page-header">
+    <h2>⏰ 令牌过期管理</h2>
+</div>
+
+<div class="stats-bar">
+    <div class="stat">
+        <div class="stat-num">{{ stats.total_accounts }}</div>
+        <div class="stat-label">总账号数</div>
+    </div>
+    <div class="stat">
+        <div class="stat-num" style="color: #f44336;">{{ stats.expired_tokens }}</div>
+        <div class="stat-label">已过期</div>
+    </div>
+    <div class="stat">
+        <div class="stat-num" style="color: #ff9800;">{{ stats.expiring_soon_tokens }}</div>
+        <div class="stat-label">即将过期 (14天内)</div>
+    </div>
+</div>
+
+<div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+    <p><strong>令牌有效期：</strong>{{ token_lifetime_days }} 天（约 3 个月）</p>
+    <p><strong>提醒规则：</strong>过期前 14 天开始提醒</p>
+    <p><strong>操作说明：</strong>令牌即将过期时，用新的 refresh_token 更新账号，或点击「续期」重置计时器</p>
+</div>
+
+{% if expiring %}
+<div class="alert-section">
+    <h3 style="color: #ff9800; margin-bottom: 12px;">⚠️ 需要处理的账号</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>邮箱</th>
+                <th>状态</th>
+                <th>剩余天数</th>
+                <th>令牌创建时间</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for acc in expiring %}
+            <tr>
+                <td>{{ acc['email'] }}</td>
+                <td>
+                    {% if acc['days_left'] <= 0 %}
+                    <span class="status-badge status-error">已过期</span>
+                    {% else %}
+                    <span class="status-badge" style="background: rgba(255,152,0,0.2); color: #ff9800;">
+                        {{ acc['days_left'] }}天后过期
+                    </span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if acc['days_left'] <= 0 %}
+                    <span style="color: #f44336; font-weight: bold;">过期 {{ -acc['days_left'] }} 天</span>
+                    {% else %}
+                    <span style="color: #ff9800; font-weight: bold;">{{ acc['days_left'] }} 天</span>
+                    {% endif %}
+                </td>
+                <td>{{ acc['token_created_at'] }}</td>
+                <td>
+                    <div style="display: flex; gap: 6px;">
+                        <form method="post" action="/account/{{ acc['id'] }}/refresh-token" style="display:inline;">
+                            <button type="submit" class="btn btn-small btn-primary" title="重置3个月计时器">续期</button>
+                        </form>
+                        <a href="/account/{{ acc['id'] }}" class="btn btn-small">查看</a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div style="text-align: center; padding: 40px; color: var(--text-muted);">
+    <p style="font-size: 1.5rem; margin-bottom: 8px;">✅</p>
+    <p>所有令牌状态正常，暂无需要处理的账号</p>
+</div>
+{% endif %}
+{% endblock %}
