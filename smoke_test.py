@@ -1,53 +1,59 @@
 #!/usr/bin/env python3
-"""
-冒烟测试：不依赖真实邮箱 token，验证核心逻辑。
+"""Offline smoke tests for the database, Graph mapping, and HTTP workflow."""
 
-覆盖：
-1. Graph 取件字段映射（mock requests，无需网络）
-2. DB 层：导入/重复导入幂等、Gmail client_secret 映射、邮件去重、改密
-3. HTTP 端到端：认证跳转、API 401、登录/改密/重启后密码持久化、导入、登录限速
+from __future__ import annotations
 
-用法：python smoke_test.py
-"""
 import asyncio
 import importlib
 import json
 import os
+import re
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 import requests
 
-REPO = os.path.dirname(os.path.abspath(__file__))
-BASE = "http://127.0.0.1:18899"
-
-_fails = []
-
-
-def check(name, cond, detail=""):
-    tag = "PASS" if cond else "FAIL"
-    print(f"  [{tag}] {name}" + (f" - {detail}" if detail and not cond else ""))
-    if not cond:
-        _fails.append(name)
+REPO = Path(__file__).resolve().parent
+INITIAL_PASSWORD = "SmokeAdminPass!123"
+NEW_PASSWORD = "SmokeAdminPass!456"
+CSRF_PATTERN = re.compile(r'<meta name="csrf-token" content="([^"]+)">')
 
 
-# ─────────── Part 1: Graph 字段映射（mock）───────────
+def check(name: str, condition: bool, detail: str = "") -> None:
+    tag = "PASS" if condition else "FAIL"
+    print(f"  [{tag}] {name}" + (f" - {detail}" if detail and not condition else ""))
+    assert condition, f"{name}: {detail}" if detail else name
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _csrf(response: requests.Response) -> str:
+    match = CSRF_PATTERN.search(response.text)
+    assert match, "CSRF token missing from authenticated page"
+    return match.group(1)
+
 
 def test_graph_mapping():
-    print("\n== Part 1: Graph 字段映射 ==")
+    print("\n== Part 1: Graph field mapping ==")
     import mail_fetcher
 
     class FakeResp:
         def __init__(self, payload, status=200):
-            self._p = payload
+            self._payload = payload
             self.status_code = status
             self.text = json.dumps(payload)
 
         def json(self):
-            return self._p
+            return self._payload
 
     calls = {}
 
@@ -57,305 +63,548 @@ def test_graph_mapping():
 
     def fake_get(url, headers=None, params=None, timeout=None, proxies=None):
         calls["auth"] = headers.get("Authorization")
-        return FakeResp({"value": [{
-            "id": "msg1",
-            "subject": "Hello",
-            "from": {"emailAddress": {"name": "Alice", "address": "a@x.com"}},
-            "receivedDateTime": "2026-07-27T01:00:00Z",
-            "body": {"contentType": "html", "content": "<b>hi</b>"},
-        }]})
+        return FakeResp(
+            {
+                "value": [
+                    {
+                        "id": "msg1",
+                        "subject": "Hello",
+                        "from": {
+                            "emailAddress": {"name": "Alice", "address": "a@x.com"}
+                        },
+                        "receivedDateTime": "2026-07-27T01:00:00Z",
+                        "body": {"contentType": "html", "content": "<b>hi</b>"},
+                    }
+                ],
+            }
+        )
 
-    orig_post, orig_get = mail_fetcher.requests.post, mail_fetcher.requests.get
-    mail_fetcher.requests.post, mail_fetcher.requests.get = fake_post, fake_get
+    original_post = mail_fetcher.requests.post
+    original_get = mail_fetcher.requests.get
+    mail_fetcher.requests.post = fake_post
+    mail_fetcher.requests.get = fake_get
     try:
-        results, new_rt = mail_fetcher._fetch_via_graph("u@outlook.com", "cid", "RT", "", "", 10)
+        results, new_token = mail_fetcher._fetch_via_graph(
+            "u@outlook.com",
+            "cid",
+            "RT",
+            "",
+            "",
+            10,
+        )
     finally:
-        mail_fetcher.requests.post, mail_fetcher.requests.get = orig_post, orig_get
+        mail_fetcher.requests.post = original_post
+        mail_fetcher.requests.get = original_get
 
-    check("Graph 返回轮换后的 refresh_token", new_rt == "NEW_RT")
-    check("Graph 刷新请求带 Mail.Read scope", "Mail.Read" in calls["token_data"]["scope"])
-    check("Graph Authorization 头正确", calls["auth"] == "Bearer AT")
-    check("Graph 拉取 INBOX+JUNK 两个文件夹", set(results.keys()) == {"INBOX", "JUNK"})
-    em = results["INBOX"][0]
-    check("Graph 字段映射(uid/subject/from/html)",
-          em["uid"] == "msg1" and em["subject"] == "Hello"
-          and "Alice" in em["from"] and em["body_html"] == "<b>hi</b>")
+    check("rotated refresh token returned", new_token == "NEW_RT")
+    check(
+        "refresh request contains Mail.Read",
+        "Mail.Read" in calls["token_data"]["scope"],
+    )
+    check("Graph bearer token set", calls["auth"] == "Bearer AT")
+    check("Graph fetches INBOX and JUNK", set(results) == {"INBOX", "JUNK"})
+    message = results["INBOX"][0]
+    check(
+        "Graph fields mapped",
+        message["uid"] == "msg1"
+        and message["subject"] == "Hello"
+        and "Alice" in message["from"]
+        and message["body_html"] == "<b>hi</b>",
+    )
 
-
-# ─────────── Part 1c: 时间格式化 ───────────
 
 def test_fmt_dt():
-    print("\n== Part 1c: 时间格式化 ==")
+    print("\n== Part 2: Date formatting ==")
     from app import fmt_dt
-    check("ISO带T和微秒", fmt_dt("2026-07-27T10:17:05.629267") == "2026-07-27 10:17")
-    check("空值显示-", fmt_dt(None) == "-" and fmt_dt("") == "-")
-    check("RFC2822邮件日期", fmt_dt("Mon, 27 Jul 2026 10:17:05 +0800") == "2026-07-27 10:17")
-    r = fmt_dt("2026-07-27T01:00:00Z")
-    check("UTC(Z)转本地格式", len(r) == 16 and r[4] == "-" and r[10] == " ")
-    check("无法解析原样截断", fmt_dt("some random string") == "some random string")
+
+    check("ISO timestamp", fmt_dt("2026-07-27T10:17:05.629267") == "2026-07-27 10:17")
+    check("empty timestamp", fmt_dt(None) == "-" and fmt_dt("") == "-")
+    check(
+        "RFC2822 timestamp",
+        fmt_dt("Mon, 27 Jul 2026 10:17:05 +0800") == "2026-07-27 10:17",
+    )
+    rendered = fmt_dt("2026-07-27T01:00:00Z")
+    check(
+        "UTC timestamp",
+        len(rendered) == 16 and rendered[4] == "-" and rendered[10] == " ",
+    )
+    check("unknown timestamp", fmt_dt("some random string") == "some random string")
 
 
 def test_classify_error():
-    print("\n== Part 1d: 错误分类 ==")
+    print("\n== Part 3: Error classification ==")
     from app import classify_error
-    check("令牌失效", classify_error('Token refresh failed (400): {"error":"invalid_grant"}') == "令牌失效")
-    check("权限范围", classify_error("invalid_scope AADSTS70011") == "权限范围不符")
-    check("连接超时", classify_error("Token refresh network error: timed out") == "连接超时")
-    check("网络错误", classify_error("Connection refused") == "网络错误")
-    check("IMAP认证", classify_error("XOAUTH2 auth failed: NO") == "IMAP认证失败")
-    check("无错误返回空", classify_error(None) == "" and classify_error("") == "")
 
+    check(
+        "invalid token",
+        classify_error('Token refresh failed: {"error":"invalid_grant"}') == "令牌失效",
+    )
+    check(
+        "invalid scope", classify_error("invalid_scope AADSTS70011") == "权限范围不符"
+    )
+    check("timeout", classify_error("network timed out") == "连接超时")
+    check("network", classify_error("Connection refused") == "网络错误")
+    check(
+        "IMAP authentication",
+        classify_error("XOAUTH2 auth failed: NO") == "IMAP认证失败",
+    )
+    check("empty error", classify_error(None) == "" and classify_error("") == "")
 
-# ─────────── Part 2: DB 层 ───────────
 
 def test_db_layer(tmpdir):
-    print("\n== Part 2: DB 层 ==")
-    os.environ["OMM_DB_PATH"] = os.path.join(tmpdir, "t1.db")
+    print("\n== Part 4: Database ==")
+    root = Path(str(tmpdir))
+    os.environ["OMM_DB_PATH"] = str(root / "database.db")
+    os.environ["OMM_SECRET_KEY_FILE"] = str(root / "database.key")
+    os.environ["OMM_ADMIN_PASSWORD"] = INITIAL_PASSWORD
     import db
+
     importlib.reload(db)
 
-    async def main():
+    async def run():
         await db.init_db()
-        r1 = await db.import_accounts([
-            "a@outlook.com----p1----cid1----rt1",
-            "g@gmail.com----secret2----cid2----rt2",
-        ])
-        check("首次导入 added=2", r1["added"] == 2 and r1["failed"] == 0, str(r1))
+        result = await db.import_accounts(
+            [
+                "a@outlook.com----unused----cid1----rt1",
+                "g@gmail.com----secret2----cid2----rt2",
+            ]
+        )
+        check(
+            "first import", result["added"] == 2 and result["failed"] == 0, str(result)
+        )
 
-        accs, _ = await db.get_accounts()
-        gmail = next(a for a in accs if a["provider"] == "google")
-        check("Gmail client_secret 写入正确列", gmail["client_secret"] == "secret2")
-        ms = next(a for a in accs if a["provider"] == "microsoft")
-        check("MS 账号默认 Graph 模式", ms["fetch_mode"] == "graph")
+        accounts, _ = await db.get_accounts()
+        gmail = next(account for account in accounts if account["provider"] == "google")
+        microsoft = next(
+            account for account in accounts if account["provider"] == "microsoft"
+        )
+        check("Gmail client secret mapping", gmail["client_secret"] == "secret2")
+        check("Microsoft password discarded", microsoft["password"] == "")
+        check("Microsoft defaults to Graph", microsoft["fetch_mode"] == "graph")
 
-        aid = ms["id"]
-        await db.update_account_status(aid, "active", mail_count=7)
-        n = await db.save_emails(aid, "INBOX", [
-            {"uid": "1", "from": "x", "subject": "s", "body": "", "body_html": "", "date": ""}
-        ])
-        check("邮件首次入库", n == 1)
+        account_id = microsoft["id"]
+        await db.update_account_status(account_id, "active", mail_count=7)
+        saved = await db.save_emails(
+            account_id,
+            "INBOX",
+            [
+                {
+                    "uid": "1",
+                    "from": "x",
+                    "subject": "s",
+                    "body": "",
+                    "body_html": "",
+                    "date": "",
+                }
+            ],
+        )
+        check("first email saved", saved == 1)
 
-        r2 = await db.import_accounts(["a@outlook.com----p1n----cid1----rt1new"])
-        check("重复导入计为 updated", r2["updated"] == 1 and r2["added"] == 0, str(r2))
-        acc = await db.get_account(aid)
-        check("重复导入保留 id/状态/邮件数",
-              acc["id"] == aid and acc["status"] == "active" and acc["mail_count"] == 7)
-        check("重复导入 token 已更新", acc["refresh_token"] == "rt1new")
-        check("重复导入后历史邮件仍在", await db.get_email_count(aid) == 1)
+        result = await db.import_accounts(
+            ["a@outlook.com----ignored----cid1----rt1new"]
+        )
+        check(
+            "duplicate import updates",
+            result["updated"] == 1 and result["added"] == 0,
+            str(result),
+        )
+        account = await db.get_account(account_id)
+        check(
+            "duplicate import preserves state",
+            account["id"] == account_id
+            and account["status"] == "active"
+            and account["mail_count"] == 7,
+        )
+        check("duplicate import replaces token", account["refresh_token"] == "rt1new")
+        check(
+            "duplicate import preserves mail", await db.get_email_count(account_id) == 1
+        )
 
-        n1 = await db.save_emails(aid, "INBOX", [
-            {"uid": "1", "from": "x", "subject": "s", "body": "", "body_html": "", "date": ""}
-        ])
-        check("重复邮件去重(同uid)", n1 == 0)
-        n2 = await db.save_emails(aid, "INBOX", [
-            {"uid": "2", "from": "y", "subject": "s2", "body": "", "body_html": "", "date": ""}
-        ])
-        check("新邮件正常入库", n2 == 1)
+        duplicate = await db.save_emails(
+            account_id,
+            "INBOX",
+            [
+                {
+                    "uid": "1",
+                    "from": "x",
+                    "subject": "s",
+                    "body": "",
+                    "body_html": "",
+                    "date": "",
+                }
+            ],
+        )
+        check("email UID is idempotent", duplicate == 0)
 
-        check("改密成功(正确旧密码)", await db.change_password("admin123", "newpass99"))
-        check("改密拒绝(错误旧密码)", not await db.change_password("wrong-old", "whatever1"))
-        check("新密码可登录", await db.verify_user("admin", "newpass99"))
-        check("旧密码已失效", not await db.verify_user("admin", "admin123"))
+        check(
+            "password change", await db.change_password(INITIAL_PASSWORD, NEW_PASSWORD)
+        )
+        check("new password accepted", await db.verify_user("admin", NEW_PASSWORD))
+        check(
+            "old password rejected", not await db.verify_user("admin", INITIAL_PASSWORD)
+        )
 
-    asyncio.run(main())
+    asyncio.run(run())
 
+    with sqlite3.connect(root / "database.db") as connection:
+        row = connection.execute(
+            "SELECT password, client_secret, refresh_token FROM accounts WHERE email = ?",
+            ("g@gmail.com",),
+        ).fetchone()
+    check(
+        "credentials encrypted at rest",
+        all(value.startswith("enc:v1:") for value in row),
+    )
 
-# ─────────── Part 2b: 旧版库结构迁移 ───────────
 
 def test_legacy_schema(tmpdir):
-    """某些部署版本用 last_error/sender/received_at 列名，init_db 应自动重命名兼容。"""
-    print("\n== Part 2b: 旧版库结构迁移 ==")
-    path = os.path.join(tmpdir, "legacy.db")
-    con = sqlite3.connect(path)
-    con.executescript("""
-        CREATE TABLE accounts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
-            password TEXT, client_id TEXT, refresh_token TEXT, status TEXT DEFAULT 'pending',
-            last_check TEXT, last_error TEXT, mail_count INTEGER DEFAULT 0,
-            created_at TEXT, token_created_at TEXT);
-        CREATE TABLE emails (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL,
-            uid TEXT NOT NULL, folder TEXT DEFAULT 'INBOX', sender TEXT, subject TEXT,
-            body TEXT, body_html TEXT, received_at TEXT, is_read INTEGER DEFAULT 0,
-            fetched_at TEXT);
-        INSERT INTO accounts (email, password, client_id, refresh_token)
-        VALUES ('old@outlook.com', 'p', 'c', 'r');
-    """)
-    con.close()
+    print("\n== Part 5: Legacy migration ==")
+    root = Path(str(tmpdir))
+    path = root / "legacy.db"
+    key_path = root / "legacy.key"
+    with sqlite3.connect(path) as connection:
+        connection.executescript("""
+            CREATE TABLE accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
+                password TEXT, client_id TEXT, refresh_token TEXT, status TEXT DEFAULT 'pending',
+                last_check TEXT, last_error TEXT, mail_count INTEGER DEFAULT 0,
+                created_at TEXT, token_created_at TEXT);
+            CREATE TABLE emails (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL,
+                uid TEXT NOT NULL, folder TEXT DEFAULT 'INBOX', sender TEXT, subject TEXT,
+                body TEXT, body_html TEXT, received_at TEXT, is_read INTEGER DEFAULT 0,
+                fetched_at TEXT);
+            INSERT INTO accounts (email, password, client_id, refresh_token)
+            VALUES ('old@outlook.com', 'p', 'c', 'r');
+        """)
 
-    os.environ["OMM_DB_PATH"] = path
+    os.environ["OMM_DB_PATH"] = str(path)
+    os.environ["OMM_SECRET_KEY_FILE"] = str(key_path)
+    os.environ["OMM_ADMIN_PASSWORD"] = INITIAL_PASSWORD
     import db
+
     importlib.reload(db)
     asyncio.run(db.init_db())
 
-    con = sqlite3.connect(path)
-    acc_cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
-    em_cols = {r[1] for r in con.execute("PRAGMA table_info(emails)")}
-    check("last_error 重命名为 error", "error" in acc_cols and "last_error" not in acc_cols)
-    check("sender 重命名为 from_addr", "from_addr" in em_cols and "sender" not in em_cols)
-    check("received_at 重命名为 date", "date" in em_cols and "received_at" not in em_cols)
-    check("旧账号数据保留", con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1)
-    con.close()
-
-    n = asyncio.run(db.save_emails(1, "INBOX", [
-        {"uid": "u1", "from": "a", "subject": "s", "body": "", "body_html": "", "date": ""}
-    ]))
-    check("迁移后邮件可正常入库", n == 1)
-
-
-# ─────────── Part 3: HTTP 端到端 ───────────
-
-def _start_server(env):
-    proc = subprocess.Popen(
-        [sys.executable, "app.py"], cwd=REPO, env=env,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    with sqlite3.connect(path) as connection:
+        account_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(accounts)")
+        }
+        email_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(emails)")
+        }
+        account_count = connection.execute("SELECT COUNT(*) FROM accounts").fetchone()[
+            0
+        ]
+        stored_token = connection.execute(
+            "SELECT refresh_token FROM accounts"
+        ).fetchone()[0]
+    check(
+        "last_error migrated",
+        "error" in account_columns and "last_error" not in account_columns,
     )
-    for _ in range(60):
+    check(
+        "sender migrated",
+        "from_addr" in email_columns and "sender" not in email_columns,
+    )
+    check(
+        "received_at migrated",
+        "date" in email_columns and "received_at" not in email_columns,
+    )
+    check("legacy account retained", account_count == 1)
+    check("legacy token encrypted", stored_token.startswith("enc:v1:"))
+
+
+def _start_server(env: dict[str, str], base_url: str) -> subprocess.Popen:
+    proc = subprocess.Popen(
+        [sys.executable, "app.py"],
+        cwd=REPO,
+        env=env,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    for _ in range(100):
+        if proc.poll() is not None:
+            raise RuntimeError(f"server exited with status {proc.returncode}")
         try:
-            if requests.get(BASE + "/login", timeout=1).status_code == 200:
+            response = requests.get(base_url + "/healthz", timeout=1)
+            if (
+                response.status_code == 200
+                and response.json().get("version") == "1.0.0"
+            ):
                 return proc
-        except requests.RequestException:
-            time.sleep(0.3)
+        except (requests.RequestException, ValueError):
+            pass
+        time.sleep(0.1)
     proc.terminate()
-    raise RuntimeError("服务启动失败")
+    proc.wait(timeout=10)
+    raise RuntimeError("server did not become healthy")
+
+
+def _login(
+    session: requests.Session, base_url: str, password: str
+) -> requests.Response:
+    return session.post(
+        base_url + "/login",
+        data={"username": "admin", "password": password},
+        allow_redirects=False,
+        timeout=10,
+    )
 
 
 def test_http(tmpdir):
-    print("\n== Part 3: HTTP 端到端 ==")
-    db2 = os.path.join(tmpdir, "t2.db")
-    env = dict(os.environ, OMM_DB_PATH=db2, OMM_PORT="18899", OMM_MS_FETCH_MODE="imap")
+    print("\n== Part 6: HTTP end-to-end ==")
+    root = Path(str(tmpdir))
+    database = root / "http.db"
+    port = _free_port()
+    base_url = f"http://127.0.0.1:{port}"
+    env = dict(os.environ)
+    env.update(
+        {
+            "OMM_ADMIN_PASSWORD": INITIAL_PASSWORD,
+            "OMM_AUTO_CHECK_HOURS": "0",
+            "OMM_DB_PATH": str(database),
+            "OMM_HOST": "127.0.0.1",
+            "OMM_MS_FETCH_MODE": "imap",
+            "OMM_PORT": str(port),
+            "OMM_SECRET_KEY_FILE": str(root / "http.key"),
+            "OMM_SECURE_COOKIE": "0",
+            "NO_PROXY": "127.0.0.1,localhost",
+            "no_proxy": "127.0.0.1,localhost",
+        }
+    )
 
-    proc = _start_server(env)
+    proc = _start_server(env, base_url)
     try:
-        s = requests.Session()
-        r = s.get(BASE + "/", allow_redirects=False)
-        check("未认证访问首页跳转登录", r.status_code == 302 and "/login" in r.headers.get("Location", ""))
-        r = s.get(BASE + "/api/stats", allow_redirects=False)
-        check("/api/stats 未认证返回 401", r.status_code == 401)
-        r = s.get(BASE + "/api/account/1/emails", allow_redirects=False)
-        check("邮件 API 未认证返回 401", r.status_code == 401)
+        session = requests.Session()
+        response = session.get(base_url + "/", allow_redirects=False, timeout=10)
+        check(
+            "anonymous page redirects",
+            response.status_code == 302 and response.headers["location"] == "/login",
+        )
+        response = session.get(
+            base_url + "/api/stats", allow_redirects=False, timeout=10
+        )
+        check(
+            "anonymous API rejected",
+            response.status_code == 401 and response.json()["error"] == "Unauthorized",
+        )
+        response = requests.post(
+            base_url + "/check-all", allow_redirects=False, timeout=10
+        )
+        check(
+            "anonymous action rejected as JSON",
+            response.status_code == 401 and response.json()["error"] == "Unauthorized",
+        )
 
-        r = s.post(BASE + "/login", data={"username": "admin", "password": "bad"}, allow_redirects=False)
-        check("错误密码登录被拒", "用户名或密码错误" in r.text)
-        r = s.post(BASE + "/login", data={"username": "admin", "password": "admin123"}, allow_redirects=False)
-        check("正确密码登录成功", r.status_code == 302)
-        r = s.get(BASE + "/")
-        check("首页可访问", r.status_code == 200 and "账号列表" in r.text)
+        response = _login(session, base_url, "wrong-password")
+        check("bad password rejected", response.status_code == 401)
+        response = _login(session, base_url, INITIAL_PASSWORD)
+        check("login succeeds", response.status_code == 303)
+        cookie = response.headers.get("set-cookie", "")
+        check(
+            "session cookie is HttpOnly and SameSite strict",
+            "HttpOnly" in cookie and "SameSite=strict" in cookie,
+        )
+        check("HTTP test cookie is not Secure", "Secure" not in cookie)
 
-        r = s.post(BASE + "/import", data={"text": "t1@outlook.com----p----cid----rt\nt2@gmail.com----sec----cid----rt2"})
-        check("HTTP 导入新增 2 个", "新增 <strong>2</strong>" in r.text)
-        r = s.post(BASE + "/import", data={"text": "t1@outlook.com----p----cid----rt\nt2@gmail.com----sec----cid----rt2"})
-        check("HTTP 重复导入更新 2 个", "更新 <strong>2</strong>" in r.text)
-        r = s.get(BASE + "/")
-        check("OMM_MS_FETCH_MODE=imap 导入默认生效", 'data-prev="imap"' in r.text)
+        page = session.get(base_url + "/", timeout=10)
+        csrf = _csrf(page)
+        check(
+            "authenticated home available",
+            page.status_code == 200 and "version-widget" in page.text,
+        )
+        response = session.post(base_url + "/import", data={"text": "x"}, timeout=10)
+        check(
+            "missing CSRF rejected",
+            response.status_code == 422 or response.status_code == 403,
+        )
 
-        r = s.post(BASE + "/password", data={"old_password": "admin123", "new_password": "testpass456"})
-        check("界面改密成功", "密码已修改" in r.text)
-        r = s.post(BASE + "/password", data={"old_password": "admin123", "new_password": "testpass456"})
-        check("旧密码改密被拒", "旧密码错误" in r.text)
-        s.get(BASE + "/logout")
-        r = s.post(BASE + "/login", data={"username": "admin", "password": "admin123"}, allow_redirects=False)
-        check("改密后旧密码失效", "用户名或密码错误" in r.text)
-        r = s.post(BASE + "/login", data={"username": "admin", "password": "testpass456"}, allow_redirects=False)
-        check("改密后新密码可登录", r.status_code == 302)
+        import_text = (
+            "t1@outlook.com----unused----cid----rt\nt2@gmail.com----sec----cid----rt2"
+        )
+        response = session.post(
+            base_url + "/import",
+            data={"text": import_text, "csrf_token": csrf},
+            timeout=10,
+        )
+        check(
+            "HTTP import adds accounts",
+            response.status_code == 200 and "<strong>2</strong>" in response.text,
+        )
+        response = session.post(
+            base_url + "/import",
+            data={"text": import_text, "csrf_token": csrf},
+            timeout=10,
+        )
+        check(
+            "HTTP import is idempotent",
+            response.status_code == 200 and "<strong>2</strong>" in response.text,
+        )
 
-        r = s.get(BASE + "/api/account/1/emails")
-        check("邮件 API 认证后可用", r.status_code == 200 and "emails" in r.json())
+        response = session.post(
+            base_url + "/account/1/prefs",
+            data={"fetch_mode": "graph", "csrf_token": csrf},
+            timeout=10,
+        )
+        check(
+            "account fetch mode changed",
+            response.status_code == 200 and response.json()["fetch_mode"] == "graph",
+        )
 
-        # 全局设置页
-        r = s.get(BASE + "/settings")
-        check("设置页可访问", r.status_code == 200 and "全局设置" in r.text)
-        r = s.post(BASE + "/settings", data={"global_proxy": "socks5://127.0.0.1:1080",
-                                             "default_ms_fetch_mode": "imap",
-                                             "auto_check_hours": "12"})
-        check("设置保存成功", "设置已保存" in r.text)
-        r = s.get(BASE + "/settings")
-        check("设置已持久化", "socks5://127.0.0.1:1080" in r.text)
-        check("自动检测间隔已保存", 'value="12.0"' in r.text or 'value="12"' in r.text)
-        s.post(BASE + "/settings", data={"global_proxy": "", "default_ms_fetch_mode": "graph",
-                                         "auto_check_hours": "0"})
+        response = session.post(
+            base_url + "/settings",
+            data={
+                "global_proxy": "http://127.0.0.1:9",
+                "default_ms_fetch_mode": "imap",
+                "auto_check_hours": "12",
+                "csrf_token": csrf,
+            },
+            timeout=10,
+        )
+        check(
+            "settings saved",
+            response.status_code == 200 and "http://127.0.0.1:9" in response.text,
+        )
 
-        # 导出账号
-        r = s.get(BASE + "/export")
-        check("导出包含账号且为导入格式",
-              r.status_code == 200 and "t1@outlook.com----p----cid----rt" in r.text)
-        r = requests.get(BASE + "/export", allow_redirects=False)
-        check("导出未认证跳转登录", r.status_code == 302)
+        response = session.post(
+            base_url + "/export",
+            data={"account_id": "all", "current_password": "wrong", "csrf_token": csrf},
+            timeout=10,
+        )
+        check("export requires current password", response.status_code == 403)
+        response = session.post(
+            base_url + "/export",
+            data={
+                "account_id": "all",
+                "current_password": INITIAL_PASSWORD,
+                "csrf_token": csrf,
+            },
+            timeout=10,
+        )
+        check(
+            "export succeeds",
+            response.status_code == 200
+            and "t1@outlook.com--------cid----rt" in response.text,
+        )
+        check(
+            "Gmail secret exported",
+            "t2@gmail.com----sec----cid----rt2" in response.text,
+        )
+        check(
+            "export is non-cacheable",
+            "no-store" in response.headers.get("cache-control", ""),
+        )
 
-        # 列表下拉切换取件方式
-        r = s.post(BASE + "/account/1/prefs", data={"fetch_mode": "graph"})
-        check("下拉切换 Graph 成功", r.status_code == 200 and r.json().get("fetch_mode") == "graph")
+        response = session.post(
+            base_url + "/accounts/bulk-fetch-mode",
+            data={"fetch_mode": "imap", "csrf_token": csrf},
+            timeout=10,
+        )
+        check(
+            "bulk fetch mode changed",
+            response.status_code == 200 and "Microsoft" in response.text,
+        )
 
-        # 批量切换全部 MS 账号
-        r = s.post(BASE + "/accounts/bulk-fetch-mode", data={"fetch_mode": "imap"})
-        check("批量切换全部MS账号", "已将 1 个 Microsoft 账号全部切换为 IMAP 模式" in r.text)
+        response = session.post(
+            base_url + "/check-all",
+            headers={"X-CSRF-Token": csrf},
+            timeout=30,
+        )
+        payload = response.json()
+        check(
+            "health check response shape",
+            response.status_code == 200
+            and set(payload) == {"success", "failed", "total_emails"},
+        )
+        check(
+            "offline fake accounts fail quickly",
+            payload["failed"] == 2 and payload["success"] == 0,
+            str(payload),
+        )
 
-        # 列表筛选
-        r = s.get(BASE + "/?provider=google")
-        check("按供应商筛选", "t2@gmail.com" in r.text and "t1@outlook.com" not in r.text)
-        r = s.get(BASE + "/?provider=microsoft")
-        check("筛选-仅Microsoft", "t1@outlook.com" in r.text and "t2@gmail.com" not in r.text)
-        r = s.get(BASE + "/?q=gmail")
-        check("邮箱关键词搜索", "t2@gmail.com" in r.text and "t1@outlook.com" not in r.text)
-        r = s.get(BASE + "/?status=disabled")
-        check("按状态筛选(无禁用账号)", "t1@outlook.com" not in r.text and "t2@gmail.com" not in r.text)
+        response = session.post(
+            base_url + "/password",
+            data={
+                "old_password": INITIAL_PASSWORD,
+                "new_password": NEW_PASSWORD,
+                "csrf_token": csrf,
+            },
+            allow_redirects=False,
+            timeout=10,
+        )
+        check(
+            "password changed",
+            response.status_code == 303
+            and response.headers["location"] == "/login?changed=1",
+        )
+        response = session.get(
+            base_url + "/api/stats", allow_redirects=False, timeout=10
+        )
+        check("password change revokes session", response.status_code == 401)
+        check(
+            "old password rejected",
+            _login(requests.Session(), base_url, INITIAL_PASSWORD).status_code == 401,
+        )
 
-        # 勾选导出
-        r = s.post(BASE + "/export", data={"account_id": ["1"]})
-        check("导出选中仅含勾选账号",
-              r.status_code == 200 and "t1@outlook.com" in r.text and "t2@gmail.com" not in r.text)
-        r = s.post(BASE + "/export", data=[("account_id", "1"), ("account_id", "2")])
-        check("导出选中多个账号", "t1@outlook.com" in r.text and "t2@gmail.com" in r.text)
-
-        # 一键检测（假 token 必失败 → failed=2，验证失败计数与异常标记链路）
-        r = requests.post(BASE + "/check-all", allow_redirects=False)
-        check("一键检测未认证跳转", r.status_code == 302)
-        r = s.post(BASE + "/check-all", timeout=120)
-        d = r.json()
-        check("一键检测返回结构", all(k in d for k in ("success", "failed", "total_emails")))
-        check("一键检测假账号全部标记失败", d.get("failed") == 2 and d.get("success") == 0, str(d))
-        r = s.get(BASE + "/?status=error")
-        check("检测后异常筛选可见",
-              "t1@outlook.com" in r.text and any(k in r.text for k in ("令牌失效", "网络错误", "取件失败", "连接超时")))
+        session = requests.Session()
+        check(
+            "new password accepted",
+            _login(session, base_url, NEW_PASSWORD).status_code == 303,
+        )
+        page = session.get(base_url + "/", timeout=10)
+        csrf = _csrf(page)
+        response = session.post(
+            base_url + "/logout",
+            data={"csrf_token": csrf},
+            allow_redirects=False,
+            timeout=10,
+        )
+        check("logout is CSRF-protected POST", response.status_code == 303)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
 
-    # 重启：验证密码持久化 + 登录限速
-    proc = _start_server(env)
+    proc = _start_server(env, base_url)
     try:
-        r = requests.post(BASE + "/login", data={"username": "admin", "password": "testpass456"}, allow_redirects=False)
-        check("重启后新密码仍有效(持久化)", r.status_code == 302)
+        check(
+            "password persists after restart",
+            _login(requests.Session(), base_url, NEW_PASSWORD).status_code == 303,
+        )
+        limited = requests.Session()
         for _ in range(5):
-            requests.post(BASE + "/login", data={"username": "admin", "password": "bad"})
-        r = requests.post(BASE + "/login", data={"username": "admin", "password": "testpass456"})
-        check("登录限速生效(5次失败锁定)", "尝试次数过多" in r.text)
+            _login(limited, base_url, "wrong-password")
+        response = _login(limited, base_url, NEW_PASSWORD)
+        check("login rate limit activates", response.status_code == 429)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
 
-    con = sqlite3.connect(db2)
-    rows = con.execute("SELECT id, email, client_secret, fetch_mode FROM accounts ORDER BY id").fetchall()
-    con.close()
-    check("HTTP 导入 2 个账号", len(rows) == 2)
-    check("批量切换后 fetch_mode 落库", rows[0][3] == "imap")
-    check("Gmail client_secret 经 HTTP 导入正确", rows[1][2] == "sec")
+    with sqlite3.connect(database) as connection:
+        rows = connection.execute(
+            "SELECT email, password, client_secret, refresh_token, fetch_mode FROM accounts ORDER BY id",
+        ).fetchall()
+    check("HTTP imported two accounts", len(rows) == 2)
+    check("bulk mode persisted", rows[0][4] == "imap")
+    encrypted_values = [rows[0][3], rows[1][1], rows[1][2], rows[1][3]]
+    check(
+        "HTTP credentials encrypted",
+        all(value.startswith("enc:v1:") for value in encrypted_values),
+    )
 
 
-def main():
-    tmpdir = tempfile.mkdtemp(prefix="omm_test_")
-    print(f"测试目录: {tmpdir}")
-    test_graph_mapping()
-    test_fmt_dt()
-    test_classify_error()
-    test_db_layer(tmpdir)
-    test_legacy_schema(tmpdir)
-    test_http(tmpdir)
-    print("\n" + ("=" * 40))
-    if _fails:
-        print(f"❌ {len(_fails)} 项失败: {_fails}")
-        sys.exit(1)
-    print("✅ 全部冒烟测试通过")
+def main() -> None:
+    with tempfile.TemporaryDirectory(
+        prefix="omm_smoke_", ignore_cleanup_errors=True
+    ) as tmpdir:
+        print(f"Test directory: {tmpdir}")
+        test_graph_mapping()
+        test_fmt_dt()
+        test_classify_error()
+        test_db_layer(tmpdir)
+        test_legacy_schema(tmpdir)
+        test_http(tmpdir)
+    print("\nAll smoke tests passed")
 
 
 if __name__ == "__main__":

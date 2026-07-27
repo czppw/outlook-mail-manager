@@ -43,6 +43,9 @@
             {% if error %}
             <div class="error">{{ error }}</div>
             {% endif %}
+            {% if changed %}
+            <div class="alert alert-success">密码已修改，请重新登录</div>
+            {% endif %}
             <form method="post" action="/login">
                 <div class="form-group">
                     <label>用户名</label>

@@ -18,7 +18,7 @@
     <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
         <p><strong>什么时候需要更新？</strong></p>
         <ul style="margin: 8px 0 0 20px; font-size: 13px;">
-            <li>令牌过期（90天未取件）</li>
+            <li>上游验证失败或长期未成功刷新</li>
             <li>取件报错 "Token refresh failed"</li>
             <li>上游提供了新的授权码</li>
         </ul>
@@ -27,10 +27,16 @@
     </div>
 
     <form method="post" action="/account/{{ account['id'] }}/edit-token">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label>新的 Refresh Token（授权码）</label>
-            <textarea name="new_refresh_token" rows="4" required
-                      placeholder="粘贴新的 refresh_token..."></textarea>
+            <textarea name="new_refresh_token" rows="4"
+                      placeholder="不更换令牌时可留空"></textarea>
+        </div>
+        <div class="form-group">
+            <label>账号专用代理（留空使用全局代理）</label>
+            <input type="text" name="account_proxy" value="{{ account.get('proxy', '') }}"
+                   placeholder="socks5h://user:pass@host:port">
         </div>
         <div style="display: flex; gap: 8px;">
             <button type="submit" class="btn btn-primary">保存</button>

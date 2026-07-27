@@ -27,6 +27,7 @@
     {% endif %}
 
     <form method="post" enctype="multipart/form-data">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label>粘贴账号（每行一个）：</label>
             <textarea name="text" rows="10" placeholder="email1@outlook.com----pass1----client_id1----refresh_token1

@@ -1,24 +1,18 @@
-"""
-OAuth2 Mail Fetcher - 通用批量邮箱取件工具
-支持 Outlook/Hotmail/Gmail 等 OAuth2 邮箱。
+"""OAuth2 mail fetching over verified IMAP TLS or Microsoft Graph."""
 
-取件方式：
-- IMAP（SASL XOAUTH2），Microsoft / Google 均支持
-- Microsoft Graph API（仅 Microsoft，应对 IMAP 风控；要求 refresh_token 带 Mail.Read scope）
-
-代理支持：
-- 全局：环境变量 OMM_PROXY（如 socks5://user:pass@host:port 或 http://host:port）
-- 单账号：accounts.proxy 列（优先于全局）
-- token 刷新 / Graph 请求走 requests proxies；IMAP 走 PySocks 包装 socket
-"""
-import imaplib
-import socket
-import email
 import asyncio
+import email
+import imaplib
 import logging
+import math
 import os
+import re
+import ssl
+import time
+from datetime import datetime, timezone
 from email.header import decode_header
-from urllib.parse import urlparse
+from email.utils import parsedate_to_datetime
+from urllib.parse import unquote, urlparse
 
 import requests
 
@@ -26,12 +20,22 @@ logger = logging.getLogger(__name__)
 
 IMAP_TIMEOUT = 30
 HTTP_TIMEOUT = 20
+MAX_EMAIL_BYTES = 10 * 1024 * 1024
+GRAPH_MAX_ATTEMPTS = 4
+GRAPH_BACKOFF_BASE = 0.5
+GRAPH_BACKOFF_CAP = 8.0
 
-# ─────────── 供应商配置 ───────────
 PROVIDERS = {
     "microsoft": {
         "name": "Microsoft",
-        "domains": ["outlook.com", "hotmail.com", "live.com", "msn.com", "office365.com", "outlook.cn"],
+        "domains": [
+            "outlook.com",
+            "hotmail.com",
+            "live.com",
+            "msn.com",
+            "office365.com",
+            "outlook.cn",
+        ],
         "imap_host": "outlook.office365.com",
         "imap_port": 993,
         "token_url": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
@@ -53,19 +57,38 @@ PROVIDERS = {
 GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
 
+class FolderFetchError(RuntimeError):
+    """A folder had malformed messages and therefore was only partially read."""
+
+    def __init__(self, folder: str, failed_count: int, partial_emails: list[dict]):
+        self.folder = folder
+        self.failed_count = failed_count
+        self.partial_emails = partial_emails
+        super().__init__(
+            f"Folder {folder!r} contained {failed_count} message(s) that could not be parsed"
+        )
+
+
+class MailboxFetchError(RuntimeError):
+    """A mailbox fetch returned usable messages together with folder errors."""
+
+    def __init__(self, partial_results: dict[str, list[dict]], issues: list[str]):
+        self.partial_results = partial_results
+        self.issues = issues
+        super().__init__("; ".join(issues))
+
+
 def detect_provider(email_addr: str) -> str:
-    """根据邮箱域名自动识别供应商。"""
+    """Detect the provider from the mailbox domain."""
     domain = email_addr.split("@")[-1].lower() if "@" in email_addr else ""
     for provider_key, provider in PROVIDERS.items():
         if domain in provider["domains"]:
             return provider_key
-    # 默认用微软（很多企业邮箱也走 outlook.office365.com）
     return "microsoft"
 
 
 def default_fetch_mode(provider_key: str) -> str:
-    """新导入账号的默认取件方式。MS 近期 IMAP 风控，默认 Graph；
-    可用环境变量 OMM_MS_FETCH_MODE=imap 改回。Google 仅支持 IMAP。"""
+    """Use Graph for Microsoft by default and IMAP for Google."""
     if provider_key == "microsoft":
         mode = os.environ.get("OMM_MS_FETCH_MODE", "graph").strip().lower()
         return "graph" if mode == "graph" else "imap"
@@ -76,24 +99,29 @@ def get_provider_config(provider_key: str) -> dict:
     return PROVIDERS.get(provider_key, PROVIDERS["microsoft"])
 
 
-def _effective_proxy(proxy: str = "") -> str:
-    """单账号代理优先，其次全局 OMM_PROXY。"""
-    return (proxy or "").strip() or os.environ.get("OMM_PROXY", "").strip()
+def _effective_proxy(proxy: str | None = None) -> str:
+    """Use the environment only when no explicit proxy decision was supplied."""
+    if proxy is None:
+        return os.environ.get("OMM_PROXY", "").strip()
+    return proxy.strip()
 
 
 def _requests_proxies(proxy: str):
-    return {"http": proxy, "https": proxy} if proxy else None
+    if proxy:
+        return {"http": proxy, "https": proxy}
+    return {"http": None, "https": None, "all": None}
 
 
-# ─────────── OAuth2 token ───────────
-
-def get_access_token(client_id: str, refresh_token: str, provider_key: str = "microsoft",
-                     client_secret: str = "", proxy: str = "",
-                     scope_override: str = "") -> tuple[str, str]:
-    """用 refresh_token 换取 access_token。返回 (access_token, new_refresh_token)。
-    微软和 Google 都会在每次刷新时轮换 refresh_token。"""
+def get_access_token(
+    client_id: str,
+    refresh_token: str,
+    provider_key: str = "microsoft",
+    client_secret: str = "",
+    proxy: str | None = None,
+    scope_override: str = "",
+) -> tuple[str, str]:
+    """Exchange a refresh token without retrying an ambiguous token rotation."""
     provider = get_provider_config(provider_key)
-
     data = {
         "client_id": client_id,
         "grant_type": "refresh_token",
@@ -104,316 +132,763 @@ def get_access_token(client_id: str, refresh_token: str, provider_key: str = "mi
         data["client_secret"] = client_secret
 
     try:
-        # requests 会自动做 form-urlencoded 编码
-        resp = requests.post(provider["token_url"], data=data, timeout=HTTP_TIMEOUT,
-                             proxies=_requests_proxies(_effective_proxy(proxy)))
-    except requests.RequestException as e:
-        raise Exception(f"Token refresh network error: {e}")
+        resp = requests.post(
+            provider["token_url"],
+            data=data,
+            timeout=HTTP_TIMEOUT,
+            proxies=_requests_proxies(_effective_proxy(proxy)),
+        )
+    except requests.RequestException as exc:
+        raise RuntimeError("Token refresh network error") from exc
 
     if resp.status_code != 200:
-        raise Exception(f"Token refresh failed ({resp.status_code}): {resp.text[:200]}")
+        # Preserve useful OAuth classifications without copying response bodies,
+        # which may contain credentials returned by a non-conforming endpoint.
+        known_errors = {
+            "invalid_request",
+            "invalid_client",
+            "invalid_grant",
+            "invalid_scope",
+            "unauthorized_client",
+            "unsupported_grant_type",
+        }
+        try:
+            error_code = resp.json().get("error", "")
+        except (ValueError, AttributeError):
+            error_code = ""
+        suffix = f": {error_code}" if error_code in known_errors else ""
+        raise RuntimeError(f"Token refresh failed ({resp.status_code}){suffix}")
 
-    result = resp.json()
+    try:
+        result = resp.json()
+    except ValueError as exc:
+        raise RuntimeError("Token refresh returned invalid JSON") from exc
     access_token = result.get("access_token")
     if not access_token:
-        raise Exception("No access_token in response")
-    return access_token, result.get("refresh_token", refresh_token)
+        raise RuntimeError("No access_token in token response")
+    rotated = result.get("refresh_token")
+    if not isinstance(rotated, str) or not rotated.strip():
+        rotated = refresh_token
+    return access_token, rotated
 
 
-# ─────────── 代理 IMAP ───────────
+async def refresh_access_token(
+    client_id: str,
+    refresh_token: str,
+    provider_key: str = "microsoft",
+    client_secret: str = "",
+    fetch_mode: str = "imap",
+    proxy: str | None = None,
+) -> tuple[str, str]:
+    """Refresh asynchronously so the caller can persist rotation before fetching."""
+    scope_override = ""
+    if provider_key == "microsoft" and fetch_mode == "graph":
+        scope_override = get_provider_config("microsoft")["graph_scope"]
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: get_access_token(
+            client_id,
+            refresh_token,
+            provider_key,
+            client_secret,
+            proxy=proxy,
+            scope_override=scope_override,
+        ),
+    )
+
 
 def _parse_proxy(proxy_url: str) -> dict:
-    import socks  # PySocks，仅在使用代理时才需要
-    u = urlparse(proxy_url)
-    scheme = (u.scheme or "socks5").lower()
+    import socks
+
+    parsed = urlparse(proxy_url)
+    scheme = (parsed.scheme or "socks5").lower()
     type_map = {
-        "socks5": socks.SOCKS5, "socks5h": socks.SOCKS5,
-        "socks4": socks.SOCKS4, "http": socks.HTTP,
+        "socks5": socks.SOCKS5,
+        "socks5h": socks.SOCKS5,
+        "socks4": socks.SOCKS4,
+        "http": socks.HTTP,
     }
     if scheme not in type_map:
-        raise ValueError(f"Unsupported proxy scheme: {scheme} (支持 socks5/socks5h/socks4/http)")
+        raise ValueError(
+            f"Unsupported proxy scheme: {scheme} (supported: socks5/socks5h/socks4/http)"
+        )
+    if not parsed.hostname:
+        raise ValueError("Proxy URL must include a hostname")
     return {
         "type": type_map[scheme],
-        "host": u.hostname,
-        "port": u.port or 1080,
-        "username": u.username,
-        "password": u.password,
+        "host": parsed.hostname,
+        "port": parsed.port or (8080 if scheme == "http" else 1080),
+        "rdns": scheme == "socks5h",
+        "username": unquote(parsed.username) if parsed.username else None,
+        "password": unquote(parsed.password) if parsed.password else None,
     }
+
+
+def _verified_ssl_context() -> ssl.SSLContext:
+    context = ssl.create_default_context()
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
 
 
 class _ProxyIMAP4SSL(imaplib.IMAP4_SSL):
-    """通过 SOCKS/HTTP(CONNECT) 代理建立 IMAP SSL 连接。"""
+    """Create a verified IMAP TLS connection over a SOCKS/HTTP tunnel."""
 
-    def __init__(self, host: str, port: int, proxy_url: str, timeout: int = IMAP_TIMEOUT):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        proxy_url: str,
+        ssl_context: ssl.SSLContext,
+        timeout: int = IMAP_TIMEOUT,
+    ):
         self._proxy_url = proxy_url
-        super().__init__(host, port, timeout=timeout)
+        super().__init__(
+            host,
+            port,
+            ssl_context=ssl_context,
+            timeout=timeout,
+        )
 
     def _create_socket(self, timeout):
         import socks
-        p = _parse_proxy(self._proxy_url)
-        sock = socks.create_connection(
+
+        proxy = _parse_proxy(self._proxy_url)
+        raw_socket = socks.create_connection(
             (self.host, self.port),
             timeout=timeout or self.timeout or IMAP_TIMEOUT,
-            proxy_type=p["type"], addr=p["host"], port=p["port"],
-            username=p.get("username"), password=p.get("password"),
+            proxy_type=proxy["type"],
+            proxy_addr=proxy["host"],
+            proxy_port=proxy["port"],
+            proxy_rdns=proxy["rdns"],
+            proxy_username=proxy["username"],
+            proxy_password=proxy["password"],
         )
-        return self.ssl_context.wrap_socket(sock, server_hostname=self.host)
+        try:
+            return self.ssl_context.wrap_socket(raw_socket, server_hostname=self.host)
+        except Exception:
+            raw_socket.close()
+            raise
 
 
-def _open_imap(host: str, port: int, proxy: str = "") -> imaplib.IMAP4_SSL:
-    effective = _effective_proxy(proxy)
-    if effective:
-        return _ProxyIMAP4SSL(host, port, effective, timeout=IMAP_TIMEOUT)
-    return imaplib.IMAP4_SSL(host, port, timeout=IMAP_TIMEOUT)
+def _open_imap(host: str, port: int, proxy: str | None = None) -> imaplib.IMAP4_SSL:
+    context = _verified_ssl_context()
+    effective_proxy = _effective_proxy(proxy)
+    if effective_proxy:
+        return _ProxyIMAP4SSL(
+            host,
+            port,
+            effective_proxy,
+            ssl_context=context,
+            timeout=IMAP_TIMEOUT,
+        )
+    return imaplib.IMAP4_SSL(
+        host,
+        port,
+        ssl_context=context,
+        timeout=IMAP_TIMEOUT,
+    )
 
 
-# ─────────── IMAP 取件 ───────────
+def _close_imap(imap: imaplib.IMAP4_SSL) -> None:
+    """Close an IMAP connection without masking the primary operation error."""
+    try:
+        imap.logout()
+        return
+    except Exception as exc:  # noqa: BLE001 - cleanup must not mask fetch errors
+        logger.debug("IMAP logout failed during cleanup: %s", type(exc).__name__)
+    try:
+        shutdown = getattr(imap, "shutdown", None)
+        if shutdown:
+            shutdown()
+    except Exception:  # noqa: BLE001 - cleanup must not mask fetch errors
+        logger.warning("IMAP connection cleanup failed")
+
 
 def build_xoauth2_auth(user: str, access_token: str) -> bytes:
-    import base64
-    auth_str = f"user={user}\x01auth=Bearer {access_token}\x01\x01"
-    return base64.b64encode(auth_str.encode()).decode().encode()
+    """Return raw SASL bytes; imaplib.authenticate performs Base64 itself."""
+    return f"user={user}\x01auth=Bearer {access_token}\x01\x01".encode()
 
 
 def decode_mime_header(raw: str) -> str:
     if not raw:
         return ""
-    parts = decode_header(raw)
     decoded = []
-    for part, charset in parts:
+    for part, charset in decode_header(raw):
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or 'utf-8', errors='replace'))
+            decoded.append(part.decode(charset or "utf-8", errors="replace"))
         else:
             decoded.append(str(part))
-    return ''.join(decoded)
+    return "".join(decoded)
 
 
 def _detect_junk_folder(imap: imaplib.IMAP4_SSL, fallback: str) -> str:
-    r"""通过 IMAP SPECIAL-USE 属性（\Junk / \Spam）定位垃圾邮件文件夹，
-    兼容非英文界面 Gmail 等本地化文件夹名。"""
+    r"""Locate a junk folder by the IMAP SPECIAL-USE attribute."""
     try:
         status, folder_list = imap.list()
-        if status == 'OK':
-            for item in folder_list:
-                line = item.decode(errors='replace') if isinstance(item, bytes) else str(item)
-                if '\\Junk' in line or '\\Spam' in line:
+        if status == "OK":
+            for item in folder_list or []:
+                line = (
+                    item.decode(errors="replace")
+                    if isinstance(item, bytes)
+                    else str(item)
+                )
+                if "\\Junk" in line or "\\Spam" in line:
                     parts = line.split('"')
                     return parts[-2] if len(parts) >= 3 else line.split()[-1]
-    except Exception as e:
-        logger.warning(f"Detect junk folder failed: {e}")
+    except Exception:  # noqa: BLE001 - malformed LIST entries use provider fallback
+        logger.warning("Junk-folder discovery failed; using provider default")
     return fallback
 
 
-def fetch_folder_emails(imap: imaplib.IMAP4_SSL, folder: str, limit: int = 50) -> list[dict]:
-    """从指定文件夹获取邮件。"""
+def _first_numeric_value(items) -> str:
+    for item in items or []:
+        if isinstance(item, tuple):
+            value = _first_numeric_value(item)
+            if value:
+                return value
+        elif isinstance(item, bytes):
+            match = re.search(rb"\d+", item)
+            if match:
+                return match.group(0).decode("ascii")
+        elif item is not None:
+            match = re.search(r"\d+", str(item))
+            if match:
+                return match.group(0)
+    return ""
+
+
+def _read_uidvalidity(imap: imaplib.IMAP4_SSL) -> str:
+    response_name, response_data = imap.response("UIDVALIDITY")
+    uidvalidity = _first_numeric_value(response_data)
+    if response_name != "UIDVALIDITY" or not uidvalidity:
+        raise imaplib.IMAP4.error("Selected folder did not provide UIDVALIDITY")
+    return uidvalidity
+
+
+def _extract_rfc822_size(fetch_data) -> int:
+    for item in fetch_data or []:
+        header = item[0] if isinstance(item, tuple) and item else item
+        if isinstance(header, str):
+            header = header.encode("ascii", errors="ignore")
+        if isinstance(header, bytes):
+            match = re.search(rb"RFC822\.SIZE\s+(\d+)", header, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    raise imaplib.IMAP4.error("FETCH response did not include RFC822.SIZE")
+
+
+def _extract_raw_message(fetch_data) -> bytes:
+    for item in fetch_data or []:
+        if isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes):
+            return item[1]
+    raise imaplib.IMAP4.error("FETCH response did not include a message body")
+
+
+def _iter_message_body_parts(message):
+    disposition = (message.get_content_disposition() or "").lower()
+    if disposition == "attachment" or message.get_filename():
+        return
+    if message.is_multipart():
+        payload = message.get_payload()
+        if isinstance(payload, list):
+            for child in payload:
+                yield from _iter_message_body_parts(child)
+        return
+    yield message
+
+
+def _decode_message(raw_email: bytes) -> dict:
+    msg = email.message_from_bytes(raw_email)
+    body = ""
+    body_html = ""
+
+    for part in _iter_message_body_parts(msg):
+        content_type = part.get_content_type()
+        if content_type not in {"text/plain", "text/html"}:
+            continue
+        if content_type == "text/plain" and body:
+            continue
+        if content_type == "text/html" and body_html:
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        charset = part.get_content_charset() or "utf-8"
+        content = payload.decode(charset, errors="replace")
+        if content_type == "text/html":
+            body_html = content
+        else:
+            body = content
+
+    return {
+        "from": decode_mime_header(msg.get("From", "")),
+        "subject": decode_mime_header(msg.get("Subject", "")),
+        "body": body[:50000],
+        "body_html": body_html[:100000],
+        "date": msg.get("Date", ""),
+    }
+
+
+def _record_oversized_message(
+    stats: dict[str, int] | None,
+    folder: str,
+    stable_uid: str,
+    message_size: int,
+) -> None:
+    if stats is not None:
+        stats["oversized"] = stats.get("oversized", 0) + 1
+    logger.warning(
+        "Skipping oversized email folder=%r uid=%s size=%d limit=%d",
+        folder,
+        stable_uid,
+        message_size,
+        MAX_EMAIL_BYTES,
+    )
+
+
+def fetch_folder_emails(
+    imap: imaplib.IMAP4_SSL,
+    folder: str,
+    limit: int = 50,
+    stats: dict[str, int] | None = None,
+) -> list[dict]:
+    """Fetch a folder by stable IMAP UID and report partial parsing failures."""
+    status, _ = imap.select(folder, readonly=True)
+    if status != "OK":
+        raise imaplib.IMAP4.error(f"Cannot select folder {folder!r}")
+    uidvalidity = _read_uidvalidity(imap)
+
+    status, data = imap.uid("SEARCH", None, "ALL")
+    if status != "OK":
+        raise imaplib.IMAP4.error(f"UID SEARCH failed for folder {folder!r}")
+    if not data or not data[0] or limit <= 0:
+        return []
+
+    message_uids = data[0].split()
+    message_uids = message_uids[-limit:]
     emails = []
-    try:
-        status, _ = imap.select(folder, readonly=True)
-        if status != 'OK':
-            logger.warning(f"Cannot select folder {folder}")
-            return emails
+    parse_failures = 0
 
-        status, data = imap.search(None, 'ALL')
-        if status != 'OK' or not data[0]:
-            return emails
+    for message_uid in message_uids:
+        uid_text = (
+            message_uid.decode("ascii")
+            if isinstance(message_uid, bytes)
+            else str(message_uid)
+        )
+        stable_uid = f"{uidvalidity}:{uid_text}"
 
-        msg_ids = data[0].split()
-        msg_ids = msg_ids[-limit:] if len(msg_ids) > limit else msg_ids
+        status, size_data = imap.uid("FETCH", message_uid, "(RFC822.SIZE)")
+        if status != "OK":
+            raise imaplib.IMAP4.error(
+                f"UID FETCH RFC822.SIZE failed for folder {folder!r}"
+            )
+        message_size = _extract_rfc822_size(size_data)
+        if message_size > MAX_EMAIL_BYTES:
+            _record_oversized_message(stats, folder, stable_uid, message_size)
+            continue
 
-        for msg_id in msg_ids:
-            try:
-                status, msg_data = imap.fetch(msg_id, '(RFC822)')
-                if status != 'OK':
-                    continue
-                raw_email = msg_data[0][1]
-                msg = email.message_from_bytes(raw_email)
+        status, message_data = imap.uid("FETCH", message_uid, "(BODY.PEEK[])")
+        if status != "OK":
+            raise imaplib.IMAP4.error(f"UID FETCH BODY failed for folder {folder!r}")
+        raw_email = _extract_raw_message(message_data)
+        if len(raw_email) > MAX_EMAIL_BYTES:
+            _record_oversized_message(stats, folder, stable_uid, len(raw_email))
+            continue
+        try:
+            parsed = _decode_message(raw_email)
+        except Exception:  # noqa: BLE001 - isolate malformed MIME messages
+            parse_failures += 1
+            logger.warning(
+                "Skipping malformed email folder=%r uid=%s",
+                folder,
+                stable_uid,
+            )
+            continue
+        emails.append({"uid": stable_uid, **parsed})
 
-                body = ""
-                body_html = ""
-                if msg.is_multipart():
-                    for part in msg.walk():
-                        content_type = part.get_content_type()
-                        if content_type == 'text/plain' and not body:
-                            payload = part.get_payload(decode=True)
-                            if payload:
-                                charset = part.get_content_charset() or 'utf-8'
-                                body = payload.decode(charset, errors='replace')
-                        elif content_type == 'text/html' and not body_html:
-                            payload = part.get_payload(decode=True)
-                            if payload:
-                                charset = part.get_content_charset() or 'utf-8'
-                                body_html = payload.decode(charset, errors='replace')
-                else:
-                    payload = msg.get_payload(decode=True)
-                    if payload:
-                        charset = msg.get_content_charset() or 'utf-8'
-                        content = payload.decode(charset, errors='replace')
-                        if msg.get_content_type() == 'text/html':
-                            body_html = content
-                        else:
-                            body = content
-
-                emails.append({
-                    # 注意：这是 IMAP 邮件序号，同一文件夹内短期内稳定，
-                    # 配合 (account_id, folder, uid) 唯一索引去重足够用
-                    'uid': msg_id.decode(),
-                    'from': decode_mime_header(msg.get('From', '')),
-                    'subject': decode_mime_header(msg.get('Subject', '')),
-                    'body': body[:50000],
-                    'body_html': body_html[:100000],
-                    'date': msg.get('Date', ''),
-                })
-            except Exception as e:
-                logger.warning(f"Fetch single email error: {e}")
-
-    except Exception as e:
-        logger.warning(f"Fetch folder {folder} error: {e}")
-
+    if parse_failures:
+        raise FolderFetchError(folder, parse_failures, emails)
     return emails
 
 
-def _fetch_via_imap(email_addr: str, client_id: str, refresh_token: str,
-                    provider_key: str, client_secret: str, proxy: str,
-                    limit: int) -> tuple[dict, str]:
+def _fetch_via_imap_with_access_token(
+    email_addr: str,
+    access_token: str,
+    provider_key: str,
+    proxy: str | None,
+    limit: int,
+) -> dict:
     provider = get_provider_config(provider_key)
-    access_token, new_refresh_token = get_access_token(
-        client_id, refresh_token, provider_key, client_secret, proxy=proxy
-    )
     imap = _open_imap(provider["imap_host"], provider["imap_port"], proxy=proxy)
-    auth_string = build_xoauth2_auth(email_addr, access_token)
-
     try:
-        imap.authenticate("XOAUTH2", lambda x: auth_string)
-        logger.info(f"Authenticated as {email_addr} via {provider['name']} IMAP")
-    except imaplib.IMAP4.error as e:
-        raise Exception(f"XOAUTH2 auth failed: {e}")
-
-    # 垃圾邮件文件夹：优先 SPECIAL-USE 探测，兼容本地化名称
-    junk_fallback = '[Gmail]/Spam' if provider_key == "google" else 'JUNK'
-    junk_folder = _detect_junk_folder(imap, junk_fallback)
-
-    results = {}
-    # 统一对外标签为 INBOX / JUNK，与 Web 界面筛选 tab 对应
-    for label, folder in [("INBOX", "INBOX"), ("JUNK", junk_folder)]:
+        auth_string = build_xoauth2_auth(email_addr, access_token)
         try:
-            results[label] = fetch_folder_emails(imap, folder, limit=limit)
-        except Exception as e:
-            logger.warning(f"Error fetching {folder}: {e}")
-            results[label] = []
+            imap.authenticate("XOAUTH2", lambda _challenge: auth_string)
+        except imaplib.IMAP4.error:
+            # Some servers include the SASL exchange in their error text.
+            raise RuntimeError("XOAUTH2 authentication failed") from None
 
+        logger.info("Authenticated mailbox via %s IMAP", provider["name"])
+        junk_fallback = "[Gmail]/Spam" if provider_key == "google" else "JUNK"
+        junk_folder = _detect_junk_folder(imap, junk_fallback)
+        results = {}
+        issues = []
+        for label, folder in (("INBOX", "INBOX"), ("JUNK", junk_folder)):
+            stats = {}
+            try:
+                results[label] = fetch_folder_emails(
+                    imap, folder, limit=limit, stats=stats
+                )
+            except FolderFetchError as exc:
+                results[label] = exc.partial_emails
+                issues.append(
+                    f"{label}: {exc.failed_count} malformed message(s) skipped"
+                )
+            if stats.get("oversized"):
+                issues.append(
+                    f"{label}: {stats['oversized']} oversized message(s) skipped"
+                )
+        if issues:
+            raise MailboxFetchError(results, issues)
+        return results
+    finally:
+        _close_imap(imap)
+
+
+def _retry_after_seconds(response, attempt: int) -> float:
+    fallback = min(GRAPH_BACKOFF_CAP, GRAPH_BACKOFF_BASE * (2**attempt))
+    value = (getattr(response, "headers", None) or {}).get("Retry-After")
+    if not value:
+        return fallback
     try:
-        imap.logout()
-    except Exception:
+        seconds = float(value)
+        if not math.isfinite(seconds):
+            raise ValueError("Retry-After must be finite")
+        return max(0.0, seconds)
+    except (TypeError, ValueError):
         pass
+    try:
+        retry_at = parsedate_to_datetime(value)
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+        return max(0.0, seconds)
+    except (TypeError, ValueError, OverflowError):
+        return fallback
 
-    return results, new_refresh_token
+
+_PERMANENT_GRAPH_REQUEST_ERRORS = (
+    requests.exceptions.SSLError,
+    requests.exceptions.ProxyError,
+    requests.exceptions.InvalidURL,
+    requests.exceptions.InvalidSchema,
+    requests.exceptions.MissingSchema,
+    requests.exceptions.URLRequired,
+    requests.exceptions.InvalidHeader,
+    requests.exceptions.TooManyRedirects,
+)
 
 
-# ─────────── Microsoft Graph 取件 ───────────
+def _graph_get(url: str, headers: dict, params: dict, proxies):
+    retryable_statuses = {408, 429}
+    for attempt in range(GRAPH_MAX_ATTEMPTS):
+        try:
+            response = requests.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=HTTP_TIMEOUT,
+                proxies=proxies,
+            )
+            if response.status_code == 200:
+                try:
+                    return response.json()
+                except ValueError as exc:
+                    raise RuntimeError("Graph response was invalid JSON") from exc
 
-def _fetch_via_graph(email_addr: str, client_id: str, refresh_token: str,
-                     client_secret: str, proxy: str, limit: int) -> tuple[dict, str]:
-    """通过 Microsoft Graph API 取件。要求 refresh_token 具有 Mail.Read scope
-    （若 token 只有 IMAP scope，刷新时会报 invalid_scope / unauthorized_client）。"""
-    provider = get_provider_config("microsoft")
-    access_token, new_refresh_token = get_access_token(
-        client_id, refresh_token, "microsoft", client_secret,
-        proxy=proxy, scope_override=provider["graph_scope"],
-    )
+            should_retry = (
+                response.status_code in retryable_statuses
+                or 500 <= response.status_code <= 599
+            )
+            if should_retry:
+                retry_after = _retry_after_seconds(response, attempt)
+                if retry_after > GRAPH_BACKOFF_CAP:
+                    seconds = max(1, math.ceil(retry_after))
+                    raise RuntimeError(
+                        f"Graph request failed ({response.status_code}); "
+                        f"retry after {seconds} seconds"
+                    )
+                if attempt + 1 < GRAPH_MAX_ATTEMPTS:
+                    time.sleep(retry_after)
+                    continue
+            raise RuntimeError(f"Graph request failed ({response.status_code})")
+        except _PERMANENT_GRAPH_REQUEST_ERRORS as exc:
+            raise RuntimeError("Graph request configuration error") from exc
+        except requests.RequestException as exc:
+            if attempt + 1 >= GRAPH_MAX_ATTEMPTS:
+                raise RuntimeError("Graph network error") from exc
+            time.sleep(min(GRAPH_BACKOFF_CAP, GRAPH_BACKOFF_BASE * (2**attempt)))
+    raise RuntimeError("Graph request failed after retries")
 
+
+def _fetch_via_graph_with_access_token(
+    email_addr: str,
+    access_token: str,
+    proxy: str | None,
+    limit: int,
+) -> dict:
     headers = {"Authorization": f"Bearer {access_token}"}
     proxies = _requests_proxies(_effective_proxy(proxy))
     results = {}
 
-    # well-known 文件夹名：inbox / junkemail（语言无关，无需本地化名）
     for label, well_known in [("INBOX", "inbox"), ("JUNK", "junkemail")]:
-        try:
-            resp = requests.get(
-                f"{GRAPH_BASE}/me/mailFolders/{well_known}/messages",
-                headers=headers,
-                params={
-                    "$top": limit,
-                    "$orderby": "receivedDateTime desc",
-                    "$select": "id,subject,from,receivedDateTime,body",
-                },
-                timeout=HTTP_TIMEOUT,
-                proxies=proxies,
+        payload = _graph_get(
+            f"{GRAPH_BASE}/me/mailFolders/{well_known}/messages",
+            headers=headers,
+            params={
+                "$top": limit,
+                "$orderby": "receivedDateTime desc",
+                "$select": "id,subject,from,receivedDateTime,body",
+            },
+            proxies=proxies,
+        )
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("value", []), list
+        ):
+            raise RuntimeError(  # noqa: TRY004 - normalize remote response failures
+                f"Graph response for {label} was invalid"
             )
-            if resp.status_code != 200:
-                raise Exception(f"Graph fetch {label} failed ({resp.status_code}): {resp.text[:200]}")
+        messages = payload.get("value", [])
 
-            emails = []
-            for m in resp.json().get("value", []):
-                frm = (m.get("from") or {}).get("emailAddress") or {}
-                from_str = f"{frm.get('name', '')} <{frm.get('address', '')}>".strip()
-                body_obj = m.get("body") or {}
-                is_html = (body_obj.get("contentType") or "").lower() == "html"
-                emails.append({
-                    "uid": m.get("id", ""),
-                    "from": from_str,
-                    "subject": m.get("subject") or "",
-                    "body": "" if is_html else (body_obj.get("content") or "")[:50000],
-                    "body_html": (body_obj.get("content") or "")[:100000] if is_html else "",
-                    "date": m.get("receivedDateTime", ""),
-                })
-            results[label] = emails
-        except requests.RequestException as e:
-            raise Exception(f"Graph network error ({label}): {e}")
+        folder_emails = []
+        for message in messages:
+            sender = (message.get("from") or {}).get("emailAddress") or {}
+            from_value = (
+                f"{sender.get('name', '')} <{sender.get('address', '')}>".strip()
+            )
+            body_obj = message.get("body") or {}
+            content = body_obj.get("content") or ""
+            is_html = (body_obj.get("contentType") or "").lower() == "html"
+            folder_emails.append(
+                {
+                    "uid": message.get("id", ""),
+                    "from": from_value,
+                    "subject": message.get("subject") or "",
+                    "body": "" if is_html else content[:50000],
+                    "body_html": content[:100000] if is_html else "",
+                    "date": message.get("receivedDateTime", ""),
+                }
+            )
+        results[label] = folder_emails
 
-    logger.info(f"Fetched {email_addr} via Microsoft Graph")
-    return results, new_refresh_token
+    logger.info("Fetched mailbox via Microsoft Graph")
+    return results
 
 
-# ─────────── 统一入口 ───────────
-
-def fetch_all_emails(email_addr: str, password: str, client_id: str, refresh_token: str,
-                     provider_key: str = "microsoft", client_secret: str = "",
-                     limit: int = 50, fetch_mode: str = "imap",
-                     proxy: str = "") -> tuple[dict, str]:
-    """获取收件箱 + 垃圾邮件。返回 ({'INBOX': [...], 'JUNK': [...]}, new_refresh_token)。
-    password 参数保留仅为导入格式兼容，XOAUTH2/Graph 认证均不使用它。"""
+def fetch_all_emails_with_access_token(
+    email_addr: str,
+    access_token: str,
+    provider_key: str = "microsoft",
+    limit: int = 50,
+    fetch_mode: str = "imap",
+    proxy: str | None = None,
+) -> dict:
+    """Fetch with an already refreshed token, without touching refresh-token state."""
     if provider_key == "microsoft" and fetch_mode == "graph":
-        return _fetch_via_graph(email_addr, client_id, refresh_token,
-                                client_secret, proxy, limit)
-    return _fetch_via_imap(email_addr, client_id, refresh_token,
-                           provider_key, client_secret, proxy, limit)
-
-
-async def check_account(email_addr: str, password: str, client_id: str, refresh_token: str,
-                        provider_key: str = "microsoft", client_secret: str = "",
-                        limit: int = 50, fetch_mode: str = "imap",
-                        proxy: str = "") -> tuple[dict, str]:
-    """异步接口。返回 (emails_by_folder, new_refresh_token)。"""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: fetch_all_emails(email_addr, password, client_id, refresh_token,
-                                 provider_key, client_secret, limit=limit,
-                                 fetch_mode=fetch_mode, proxy=proxy)
+        return _fetch_via_graph_with_access_token(
+            email_addr,
+            access_token,
+            proxy,
+            limit,
+        )
+    return _fetch_via_imap_with_access_token(
+        email_addr,
+        access_token,
+        provider_key,
+        proxy,
+        limit,
     )
 
 
-def list_folders(email_addr: str, password: str, client_id: str, refresh_token: str,
-                 provider_key: str = "microsoft", client_secret: str = "",
-                 proxy: str = "") -> list[str]:
-    """列出所有可用的 IMAP 文件夹（调试用）。"""
+async def check_account_with_access_token(
+    email_addr: str,
+    access_token: str,
+    provider_key: str = "microsoft",
+    limit: int = 50,
+    fetch_mode: str = "imap",
+    proxy: str | None = None,
+) -> dict:
+    """Async staged-fetch API used after the caller persists token rotation."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: fetch_all_emails_with_access_token(
+            email_addr,
+            access_token,
+            provider_key,
+            limit=limit,
+            fetch_mode=fetch_mode,
+            proxy=proxy,
+        ),
+    )
+
+
+def list_folders_with_access_token(
+    email_addr: str,
+    access_token: str,
+    provider_key: str = "microsoft",
+    proxy: str | None = None,
+) -> list[str]:
+    """List IMAP folders with an already refreshed access token."""
     provider = get_provider_config(provider_key)
-    access_token, _ = get_access_token(client_id, refresh_token, provider_key,
-                                       client_secret, proxy=proxy)
     imap = _open_imap(provider["imap_host"], provider["imap_port"], proxy=proxy)
-    auth_string = build_xoauth2_auth(email_addr, access_token)
     try:
-        imap.authenticate("XOAUTH2", lambda x: auth_string)
+        auth_string = build_xoauth2_auth(email_addr, access_token)
+        try:
+            imap.authenticate("XOAUTH2", lambda _challenge: auth_string)
+        except imaplib.IMAP4.error:
+            raise RuntimeError("XOAUTH2 authentication failed") from None
         status, folder_list = imap.list()
+        if status != "OK":
+            raise imaplib.IMAP4.error("IMAP LIST failed")
         folders = []
-        if status == 'OK':
-            for f in folder_list:
-                parts = f.decode().split('"')
-                if len(parts) >= 3:
-                    folders.append(parts[-2])
-                else:
-                    folders.append(f.decode().split()[-1])
-        imap.logout()
+        for folder in folder_list or []:
+            value = folder.decode(errors="replace")
+            parts = value.split('"')
+            folders.append(parts[-2] if len(parts) >= 3 else value.split()[-1])
         return folders
-    except Exception as e:
-        raise Exception(f"List folders failed: {e}")
+    finally:
+        _close_imap(imap)
+
+
+def _fetch_via_imap(
+    email_addr: str,
+    client_id: str,
+    refresh_token: str,
+    provider_key: str,
+    client_secret: str,
+    proxy: str | None,
+    limit: int,
+) -> tuple[dict, str]:
+    access_token, new_refresh_token = get_access_token(
+        client_id,
+        refresh_token,
+        provider_key,
+        client_secret,
+        proxy=proxy,
+    )
+    return (
+        _fetch_via_imap_with_access_token(
+            email_addr, access_token, provider_key, proxy, limit
+        ),
+        new_refresh_token,
+    )
+
+
+def _fetch_via_graph(
+    email_addr: str,
+    client_id: str,
+    refresh_token: str,
+    client_secret: str,
+    proxy: str | None,
+    limit: int,
+) -> tuple[dict, str]:
+    provider = get_provider_config("microsoft")
+    access_token, new_refresh_token = get_access_token(
+        client_id,
+        refresh_token,
+        "microsoft",
+        client_secret,
+        proxy=proxy,
+        scope_override=provider["graph_scope"],
+    )
+    return (
+        _fetch_via_graph_with_access_token(email_addr, access_token, proxy, limit),
+        new_refresh_token,
+    )
+
+
+def fetch_all_emails(
+    email_addr: str,
+    password: str,
+    client_id: str,
+    refresh_token: str,
+    provider_key: str = "microsoft",
+    client_secret: str = "",
+    limit: int = 50,
+    fetch_mode: str = "imap",
+    proxy: str | None = None,
+) -> tuple[dict, str]:
+    """Compatibility entry point used by existing scripts and integrations."""
+
+    del password
+    if provider_key == "microsoft" and fetch_mode == "graph":
+        return _fetch_via_graph(
+            email_addr,
+            client_id,
+            refresh_token,
+            client_secret,
+            proxy,
+            limit,
+        )
+    return _fetch_via_imap(
+        email_addr,
+        client_id,
+        refresh_token,
+        provider_key,
+        client_secret,
+        proxy,
+        limit,
+    )
+
+
+async def check_account(
+    email_addr: str,
+    password: str,
+    client_id: str,
+    refresh_token: str,
+    provider_key: str = "microsoft",
+    client_secret: str = "",
+    limit: int = 50,
+    fetch_mode: str = "imap",
+    proxy: str | None = None,
+) -> tuple[dict, str]:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None,
+        lambda: fetch_all_emails(
+            email_addr,
+            password,
+            client_id,
+            refresh_token,
+            provider_key,
+            client_secret,
+            limit,
+            fetch_mode,
+            proxy,
+        ),
+    )
+
+
+def list_folders(
+    email_addr: str,
+    password: str,
+    client_id: str,
+    refresh_token: str,
+    provider_key: str = "microsoft",
+    client_secret: str = "",
+    proxy: str | None = None,
+) -> list[str]:
+    del password
+    access_token, _ = get_access_token(
+        client_id,
+        refresh_token,
+        provider_key,
+        client_secret,
+        proxy=proxy,
+    )
+    return list_folders_with_access_token(
+        email_addr, access_token, provider_key, proxy
+    )

@@ -1,190 +1,231 @@
-"""
-OAuth2 邮箱批量管理器 - FastAPI 应用
-支持 Outlook/Hotmail/Gmail 等 OAuth2 邮箱。
-功能：导入账号、自动识别供应商、IMAP/Graph 取件、代理支持、
-     Web 界面查看邮件（动态加载）、登录认证（限速）、令牌过期管理
-"""
+"""FastAPI application for securely managing OAuth2 mail accounts."""
+
+from __future__ import annotations
+
 import asyncio
+import hmac
 import logging
+import math
 import os
-import secrets
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, Form, UploadFile, File, Response
-from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
+from typing import Annotated
+from urllib.parse import urlencode, urlsplit
+
+import aiosqlite
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+
 import db
 import mail_fetcher
+import update_manager
+from email_sanitizer import sanitize_email_html
+from web_security import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# Batch fetch concurrency limit
-FETCH_CONCURRENCY = 5
-
-# Session config
-SESSION_SECRET = os.environ.get("SESSION_SECRET", secrets.token_hex(32))
 SESSION_COOKIE = "omm_session"
-SESSION_MAX_AGE = 86400 * 7  # 7 days
+SESSION_MAX_AGE = 7 * 24 * 60 * 60
+FETCH_CONCURRENCY = 5
+MAX_IMPORT_LINES = 10_000
+MAX_REQUEST_BYTES = int(os.environ.get("OMM_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
+SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "0"))
 
-# Simple in-memory session store
-_sessions: dict[str, dict] = {}
-
-# Login rate limiting: ip -> [fail_count, locked_until_ts]
 LOGIN_MAX_FAILS = 5
 LOGIN_LOCK_SECONDS = 300
-_login_fails: dict[str, list] = {}
+_login_fails: dict[str, list[float]] = {}
+_account_locks: dict[int, asyncio.Lock] = {}
+_batch_lock = asyncio.Lock()
 
-# 自动健康检测间隔（小时），0=关闭；环境变量为默认值，设置页可改（存 settings 表）
-AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "6"))
+
+class AccountBusyError(RuntimeError):
+    pass
 
 
-def classify_error(err: str | None) -> str:
-    """把原始错误信息归类为简短中文原因，便于快速判断账号是真死还是误报。"""
-    if not err:
+class AccountPartialFetchError(RuntimeError):
+    def __init__(self, message: str, saved: int):
+        self.saved = saved
+        super().__init__(message)
+
+
+def classify_error(error: str | None) -> str:
+    if not error:
         return ""
-    e = err.lower()
-    if "invalid_grant" in e:
+    value = error.lower()
+    if "invalid_grant" in value:
         return "令牌失效"
-    if "invalid_scope" in e:
+    if "invalid_scope" in value:
         return "权限范围不符"
-    if "mailbox" in e and ("notfound" in e or "not found" in e):
+    if "mailbox" in value and ("notfound" in value or "not found" in value):
         return "邮箱不存在"
-    if "unauthorized" in e or "401" in e:
+    if "unauthorized" in value or "401" in value:
         return "认证失败"
-    if "forbidden" in e or "403" in e:
+    if "forbidden" in value or "403" in value:
         return "无访问权限"
-    if "xoauth2" in e:
+    if "xoauth2" in value:
         return "IMAP认证失败"
-    if "timeout" in e or "timed out" in e:
+    if "timeout" in value or "timed out" in value:
         return "连接超时"
-    if "network" in e or "connection" in e or "unreachable" in e or "resolve" in e:
+    if any(
+        word in value for word in ("network", "connection", "unreachable", "resolve")
+    ):
         return "网络错误"
     return "取件失败"
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await db.init_db()
-    logger.info("Database initialized")
-    checker = asyncio.create_task(_auto_check_loop())
-    yield
-    checker.cancel()
-
-
 async def _auto_check_hours() -> float:
-    """自动检测间隔：设置页（settings 表）优先，其次环境变量默认。"""
-    v = await db.get_setting("auto_check_hours")
-    if v is not None:
+    value = await db.get_setting("auto_check_hours")
+    if value is not None:
         try:
-            return float(v)
+            parsed = float(value)
+            if math.isfinite(parsed):
+                return max(0.0, parsed)
         except ValueError:
             pass
-    return AUTO_CHECK_DEFAULT_HOURS
+    return max(0.0, AUTO_CHECK_DEFAULT_HOURS)
 
 
-async def _auto_check_loop():
-    """后台定期健康检测：小批量取件验证账号可用性，失败自动标记 error。
-    启动后先等 10 分钟再跑第一轮，避免重启后立即打满。"""
+async def _auto_check_loop() -> None:
     await asyncio.sleep(600)
     while True:
         try:
             hours = await _auto_check_hours()
-            if hours > 0:
-                logger.info("Auto health check started")
-                results = await _fetch_all_accounts(limit=1)
-                logger.info(f"Auto health check done: {results}")
-                await asyncio.sleep(hours * 3600)
-            else:
-                await asyncio.sleep(3600)  # 关闭状态下每小时重读一次配置
+            if hours <= 0:
+                await asyncio.sleep(3600)
+                continue
+            logger.info("Automatic account health check started")
+            result = await _fetch_all_accounts(limit=1)
+            logger.info("Automatic account health check finished: %s", result)
+            await asyncio.sleep(hours * 3600)
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.warning(f"Auto health check error: {e}")
+        except Exception as exc:  # noqa: BLE001 - keep background scheduler alive
+            logger.warning(
+                "Automatic account health check failed: %s", type(exc).__name__
+            )
             await asyncio.sleep(3600)
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    with update_manager.application_instance_lock():
+        recovered = await asyncio.to_thread(update_manager.recover_interrupted_update)
+        if recovered:
+            logger.warning("Recovered an interrupted application update")
+        await db.init_db()
+        checker = asyncio.create_task(
+            _auto_check_loop(), name="automatic-mail-health-check"
+        )
+        try:
+            yield
+        finally:
+            checker.cancel()
+            with suppress(asyncio.CancelledError):
+                await checker
+
+
 app = FastAPI(title="OAuth2 Mail Manager", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+app.mount(
+    "/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static"
+)
+app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BYTES)
+app.add_middleware(SecurityHeadersMiddleware, enable_hsts=SECURE_COOKIE)
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 def fmt_dt(value) -> str:
-    """显示层时间格式化：ISO(带T/微秒/Z) 或 RFC2822 → 'YYYY-MM-DD HH:MM'。
-    带时区的转换为服务器本地时间；解析不了的原样截断返回。"""
     if not value:
         return "-"
-    s = str(value).strip()
+    text = str(value).strip()
     try:
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is not None:
-            dt = dt.astimezone()
-        return dt.strftime("%Y-%m-%d %H:%M")
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%Y-%m-%d %H:%M")
     except ValueError:
         pass
     try:
         from email.utils import parsedate_to_datetime
-        dt = parsedate_to_datetime(s)
-        if dt.tzinfo is not None:
-            dt = dt.astimezone()
-        return dt.strftime("%Y-%m-%d %H:%M")
-    except Exception:
-        return s[:30]
+
+        parsed = parsedate_to_datetime(text)
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone()
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError, OverflowError):
+        return text[:30]
 
 
 templates.env.filters["fmt_dt"] = fmt_dt
 
 
-# ─────────── Auth Helpers ───────────
+def _render(
+    request: Request, name: str, context: dict | None = None, status: int = 200
+):
+    values = dict(context or {})
+    session = getattr(request.state, "session", None) or {}
+    values.setdefault("csrf_token", session.get("csrf_token", ""))
+    values.setdefault("current_version", update_manager.get_current_version())
+    return templates.TemplateResponse(request, name, values, status_code=status)
 
-def _get_session_token(request: Request) -> str | None:
+
+def _session_token(request: Request) -> str | None:
     return request.cookies.get(SESSION_COOKIE)
 
 
-def _is_authenticated(request: Request) -> bool:
-    token = _get_session_token(request)
-    if not token:
-        return False
-    session = _sessions.get(token)
-    if not session:
-        return False
-    if session.get("expires", datetime.min) < datetime.now():
-        del _sessions[token]
-        return False
-    return True
-
-
-def _create_session(response: Response, username: str):
-    token = secrets.token_hex(32)
-    _sessions[token] = {
-        "user": username,
-        "expires": datetime.now() + timedelta(seconds=SESSION_MAX_AGE)
+def _is_api_path(path: str) -> bool:
+    return path.startswith(("/api/", "/fetch/")) or path in {
+        "/fetch-all",
+        "/check-all",
     }
-    response.set_cookie(
-        SESSION_COOKIE, token,
-        max_age=SESSION_MAX_AGE,
-        httponly=True,
-        samesite="lax"
+
+
+def _origin_allowed(request: Request) -> bool:
+    origin = request.headers.get("origin")
+    if not origin:
+        return True
+    parsed = urlsplit(origin)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.netloc.lower() == request.headers.get("host", "").lower()
     )
 
 
-class AuthRequired(Exception):
-    pass
+@app.middleware("http")
+async def authenticate_request(request: Request, call_next):
+    path = request.url.path
+    public = path == "/login" or path == "/healthz" or path.startswith("/static/")
+    token = _session_token(request)
+    session = await db.get_session(token) if token else None
+    request.state.session = session
+
+    if not public and session is None:
+        if _is_api_path(path):
+            return JSONResponse({"error": "Unauthorized"}, status_code=401)
+        return RedirectResponse("/login", status_code=302)
+
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_allowed(
+        request
+    ):
+        return JSONResponse({"error": "Invalid request origin"}, status_code=403)
+    return await call_next(request)
 
 
-def _require_auth(request: Request):
-    if not _is_authenticated(request):
-        raise AuthRequired()
-
-
-def _require_auth_api(request: Request):
-    """API 端点未认证时返回 401 JSON，而不是重定向。"""
-    if not _is_authenticated(request):
-        from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="Unauthorized")
+def _require_csrf(request: Request, form_token: str | None = None) -> None:
+    session = getattr(request.state, "session", None)
+    supplied = form_token or request.headers.get("X-CSRF-Token", "")
+    expected = session.get("csrf_token", "") if session else ""
+    if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
 
 def _client_ip(request: Request) -> str:
@@ -192,493 +233,794 @@ def _client_ip(request: Request) -> str:
 
 
 def _login_locked(ip: str) -> int:
-    """返回剩余锁定秒数，未锁定返回 0。"""
-    rec = _login_fails.get(ip)
-    if rec and rec[1] > time.time():
-        return int(rec[1] - time.time())
+    record = _login_fails.get(ip)
+    if not record:
+        return 0
+    if record[1] and record[1] <= time.time():
+        _login_fails.pop(ip, None)
+        return 0
+    if record[1]:
+        return max(1, int(record[1] - time.time()))
     return 0
 
 
-def _record_login_fail(ip: str):
-    rec = _login_fails.setdefault(ip, [0, 0.0])
-    rec[0] += 1
-    if rec[0] >= LOGIN_MAX_FAILS:
-        rec[1] = time.time() + LOGIN_LOCK_SECONDS
-        rec[0] = 0
-        logger.warning(f"Login locked for {ip} ({LOGIN_LOCK_SECONDS}s) after {LOGIN_MAX_FAILS} fails")
+def _record_login_fail(ip: str) -> None:
+    record = _login_fails.setdefault(ip, [0.0, 0.0])
+    record[0] += 1
+    if record[0] >= LOGIN_MAX_FAILS:
+        record[0] = 0
+        record[1] = time.time() + LOGIN_LOCK_SECONDS
+        logger.warning("Login temporarily locked for client %s", ip)
 
 
-def _clear_login_fail(ip: str):
-    _login_fails.pop(ip, None)
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        SESSION_COOKIE,
+        token,
+        max_age=SESSION_MAX_AGE,
+        httponly=True,
+        secure=SECURE_COOKIE,
+        samesite="strict",
+        path="/",
+    )
 
 
-# ─────────── Login / Logout ───────────
-
-@app.exception_handler(AuthRequired)
-async def auth_required_handler(request: Request, exc: AuthRequired):
-    return RedirectResponse("/login", status_code=302)
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True, "version": update_manager.get_current_version()}
 
 
 @app.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request):
-    if _is_authenticated(request):
+async def login_page(request: Request, changed: int = 0):
+    if request.state.session:
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "login.html", {})
+    return _render(request, "login.html", {"changed": bool(changed)})
 
 
 @app.post("/login")
-async def do_login(request: Request, username: str = Form(...), password: str = Form(...)):
+async def do_login(
+    request: Request, username: str = Form(...), password: str = Form(...)
+):
     ip = _client_ip(request)
     locked = _login_locked(ip)
     if locked:
-        return templates.TemplateResponse(request, "login.html", {
-            "error": f"尝试次数过多，请 {locked // 60 + 1} 分钟后再试"
-        })
-    if await db.verify_user(username, password):
-        _clear_login_fail(ip)
-        resp = RedirectResponse("/", status_code=302)
-        _create_session(resp, username)
-        return resp
-    _record_login_fail(ip)
-    return templates.TemplateResponse(request, "login.html", {
-        "error": "用户名或密码错误"
-    })
+        return _render(
+            request,
+            "login.html",
+            {"error": f"尝试次数过多，请 {locked // 60 + 1} 分钟后再试"},
+            429,
+        )
+    session = await db.authenticate_and_create_session(
+        username, password, SESSION_MAX_AGE
+    )
+    if session is None:
+        _record_login_fail(ip)
+        return _render(request, "login.html", {"error": "用户名或密码错误"}, 401)
+    _login_fails.pop(ip, None)
+    response = RedirectResponse("/", status_code=303)
+    _set_session_cookie(response, session["token"])
+    return response
 
 
-@app.get("/logout")
-async def logout(request: Request):
-    token = _get_session_token(request)
-    if token and token in _sessions:
-        del _sessions[token]
-    resp = RedirectResponse("/login", status_code=302)
-    resp.delete_cookie(SESSION_COOKIE)
-    return resp
+@app.post("/logout")
+async def logout(request: Request, csrf_token: str = Form(...)):
+    _require_csrf(request, csrf_token)
+    token = _session_token(request)
+    if token:
+        await db.revoke_session(token)
+    response = RedirectResponse("/login", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
 
 @app.get("/password", response_class=HTMLResponse)
 async def password_page(request: Request):
-    _require_auth(request)
-    return templates.TemplateResponse(request, "password.html", {})
+    return _render(request, "password.html")
 
 
 @app.post("/password")
-async def change_password(request: Request, old_password: str = Form(...), new_password: str = Form(...)):
-    _require_auth(request)
-    if len(new_password) < 6:
-        return templates.TemplateResponse(request, "password.html", {"error": "密码至少6位"})
+async def change_password(
+    request: Request,
+    old_password: str = Form(...),
+    new_password: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+    if not db.valid_new_password(new_password):
+        return _render(
+            request,
+            "password.html",
+            {"error": "密码至少8位，且必须包含英文字母和数字"},
+            400,
+        )
+    if not await db.change_password(old_password, new_password):
+        return _render(request, "password.html", {"error": "旧密码错误"}, 400)
+    response = RedirectResponse("/login?changed=1", status_code=303)
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return response
 
-    ok = await db.change_password(old_password, new_password)
-    if not ok:
-        return templates.TemplateResponse(request, "password.html", {"error": "旧密码错误"})
-    return templates.TemplateResponse(request, "password.html", {"success": "密码已修改，重启后仍然有效"})
-
-
-# ─────────── Global config ───────────
 
 async def _global_proxy() -> str:
-    """全局代理：设置页（settings 表）优先，其次 OMM_PROXY 环境变量。"""
-    p = await db.get_setting("global_proxy")
-    if p:
-        return p
+    configured = await db.get_setting("global_proxy")
+    if configured is not None:
+        return configured.strip()
     return os.environ.get("OMM_PROXY", "").strip()
 
 
+def _validate_proxy(proxy: str) -> str:
+    value = proxy.strip()
+    if not value:
+        return ""
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme.lower() not in {"http", "socks4", "socks5", "socks5h"}
+        or not parsed.hostname
+    ):
+        raise ValueError("代理地址无效")
+    try:
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError("代理端口无效") from exc
+    return value
+
+
 async def _default_ms_fetch_mode() -> str:
-    """新导入 MS 账号的默认取件方式：设置页优先，其次环境变量，默认 graph。"""
     mode = await db.get_setting("default_ms_fetch_mode")
-    if mode in ("graph", "imap"):
+    if mode in {"graph", "imap"}:
         return mode
-    env_mode = os.environ.get("OMM_MS_FETCH_MODE", "graph").strip().lower()
-    return "imap" if env_mode == "imap" else "graph"
+    return (
+        "imap"
+        if os.environ.get("OMM_MS_FETCH_MODE", "graph").lower() == "imap"
+        else "graph"
+    )
 
-
-# ─────────── Pages ───────────
 
 def _with_token_days(accounts: list[dict]) -> list[dict]:
-    """为账号列表计算令牌剩余天数（None 表示未知）与错误分类。"""
-    now = datetime.now()
-    for acc in accounts:
-        acc["days_left"] = None
-        if acc.get("token_created_at"):
+    now = datetime.now().astimezone()
+    for account in accounts:
+        account["days_left"] = None
+        value = account.get("token_created_at")
+        if value:
             try:
-                created = datetime.fromisoformat(acc["token_created_at"])
-                acc["days_left"] = (created + timedelta(days=db.TOKEN_LIFETIME_DAYS) - now).days
+                created = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if created.tzinfo is None:
+                    created = created.astimezone()
+                account["days_left"] = (
+                    created + timedelta(days=db.TOKEN_LIFETIME_DAYS) - now
+                ).days
             except ValueError:
                 pass
-        acc["error_kind"] = classify_error(acc.get("error"))
+        account["error_kind"] = classify_error(account.get("error"))
     return accounts
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, page: int = 1, provider: str = "", status: str = "",
-                fetch_mode: str = "", q: str = ""):
-    _require_auth(request)
+async def index(
+    request: Request,
+    page: int = 1,
+    provider: str = "",
+    status: str = "",
+    fetch_mode: str = "",
+    q: str = "",
+):
+    page = max(1, page)
     accounts, total = await db.get_accounts(
-        page=page, per_page=50,
-        provider=provider or None, status=status or None,
-        fetch_mode=fetch_mode or None, keyword=q.strip() or None,
+        page=page,
+        per_page=50,
+        provider=provider or None,
+        status=status or None,
+        fetch_mode=fetch_mode or None,
+        keyword=q.strip()[:200] or None,
     )
     _with_token_days(accounts)
     stats = await db.get_stats()
     expiring = await db.get_expiring_accounts()
     total_pages = max(1, (total + 49) // 50)
-    from urllib.parse import urlencode
-    qs = urlencode({k: v for k, v in
-                    {"provider": provider, "status": status,
-                     "fetch_mode": fetch_mode, "q": q}.items() if v})
-    return templates.TemplateResponse(request, "index.html", {
-        "accounts": accounts, "stats": stats,
-        "expiring": expiring,
-        "warning_days": db.TOKEN_WARNING_DAYS,
-        "provider": provider, "status": status,
-        "fetch_mode": fetch_mode, "q": q, "qs": qs,
-        "page": page, "total_pages": total_pages, "total": total
-    })
+    query = urlencode(
+        {
+            key: value
+            for key, value in {
+                "provider": provider,
+                "status": status,
+                "fetch_mode": fetch_mode,
+                "q": q,
+            }.items()
+            if value
+        }
+    )
+    return _render(
+        request,
+        "index.html",
+        {
+            "accounts": accounts,
+            "stats": stats,
+            "expiring": expiring,
+            "warning_days": db.TOKEN_WARNING_DAYS,
+            "provider": provider,
+            "status": status,
+            "fetch_mode": fetch_mode,
+            "q": q,
+            "qs": query,
+            "page": page,
+            "total_pages": total_pages,
+            "total": total,
+        },
+    )
 
 
 @app.get("/import", response_class=HTMLResponse)
 async def import_page(request: Request):
-    _require_auth(request)
-    return templates.TemplateResponse(request, "import.html", {})
+    return _render(request, "import.html")
 
 
 @app.post("/import")
-async def do_import(request: Request, text: str = Form(""), file: UploadFile = File(None)):
-    _require_auth(request)
-    lines = []
-    if text.strip():
-        lines = text.strip().split('\n')
+async def do_import(
+    request: Request,
+    text: str = Form(""),
+    file: Annotated[UploadFile | None, File()] = None,
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+    lines = text.splitlines() if text.strip() else []
     if file and file.filename:
-        content = await file.read()
-        lines.extend(content.decode('utf-8', errors='replace').split('\n'))
-
+        content = await file.read(MAX_REQUEST_BYTES + 1)
+        if len(content) > MAX_REQUEST_BYTES:
+            return _render(request, "import.html", {"error": "文件过大"}, 413)
+        lines.extend(content.decode("utf-8", errors="replace").splitlines())
     if not lines:
-        return templates.TemplateResponse(request, "import.html", {
-            "error": "请提供账号数据"
-        })
-
-    result = await db.import_accounts(lines, ms_fetch_mode=await _default_ms_fetch_mode())
-    return templates.TemplateResponse(request, "import.html", {
-        "result": result
-    })
+        return _render(request, "import.html", {"error": "请提供账号数据"}, 400)
+    if len(lines) > MAX_IMPORT_LINES:
+        return _render(request, "import.html", {"error": "导入行数过多"}, 413)
+    result = await db.import_accounts(
+        lines, ms_fetch_mode=await _default_ms_fetch_mode()
+    )
+    return _render(request, "import.html", {"result": result})
 
 
 @app.get("/tokens", response_class=HTMLResponse)
 async def token_status_page(request: Request):
-    """Token expiration overview page."""
-    _require_auth(request)
-    all_accounts = await db.get_all_active_accounts()
-    _with_token_days(all_accounts)
-    stats = await db.get_stats()
-
-    expiring = [a for a in all_accounts
-                if a["days_left"] is not None and a["days_left"] <= db.TOKEN_WARNING_DAYS]
-    expiring.sort(key=lambda x: x["days_left"])
-
-    return templates.TemplateResponse(request, "tokens.html", {
-        "expiring": expiring,
-        "stats": stats,
-        "token_lifetime_days": db.TOKEN_LIFETIME_DAYS,
-        "warning_days": db.TOKEN_WARNING_DAYS,
-    })
+    accounts = await db.get_all_active_accounts()
+    _with_token_days(accounts)
+    expiring = [
+        item
+        for item in accounts
+        if item["days_left"] is not None and item["days_left"] <= db.TOKEN_WARNING_DAYS
+    ]
+    expiring.sort(key=lambda item: item["days_left"])
+    return _render(
+        request,
+        "tokens.html",
+        {
+            "expiring": expiring,
+            "stats": await db.get_stats(),
+            "token_lifetime_days": db.TOKEN_LIFETIME_DAYS,
+            "warning_days": db.TOKEN_WARNING_DAYS,
+        },
+    )
 
 
 @app.get("/account/{account_id}", response_class=HTMLResponse)
-async def account_detail(request: Request, account_id: int, folder: str = "", page: int = 1):
-    _require_auth(request)
+async def account_detail(
+    request: Request, account_id: int, folder: str = "", page: int = 1
+):
     account = await db.get_account(account_id)
     if not account:
         return RedirectResponse("/", status_code=302)
-
-    emails, total = await db.get_emails(account_id, folder=folder or None, page=page, per_page=50)
-    total_pages = max(1, (total + 49) // 50)
-    return templates.TemplateResponse(request, "inbox.html", {
-        "account": account, "emails": emails,
-        "folder": folder, "page": page, "total_pages": total_pages, "total": total
-    })
+    page = max(1, page)
+    emails, total = await db.get_emails(
+        account_id, folder=folder or None, page=page, per_page=50
+    )
+    return _render(
+        request,
+        "inbox.html",
+        {
+            "account": account,
+            "emails": emails,
+            "folder": folder,
+            "page": page,
+            "total_pages": max(1, (total + 49) // 50),
+            "total": total,
+        },
+    )
 
 
 @app.get("/email/{email_id}", response_class=HTMLResponse)
 async def email_detail(request: Request, email_id: int):
-    _require_auth(request)
-    em = await db.get_email(email_id)
-    if not em:
+    message = await db.get_email(email_id)
+    if not message:
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "email_detail.html", {
-        "email": em
-    })
+    message["body_html"] = sanitize_email_html(message.get("body_html") or "")
+    return _render(request, "email_detail.html", {"email": message})
 
 
-# ─────────── Actions ───────────
+def _account_lock(account_id: int) -> asyncio.Lock:
+    return _account_locks.setdefault(account_id, asyncio.Lock())
+
+
+@asynccontextmanager
+async def _account_operation(account_id: int):
+    async with _account_lock(account_id):
+        lease = await db.acquire_account_lease(account_id)
+        if lease is None:
+            raise AccountBusyError("Account operation is already running")
+        try:
+            yield
+        finally:
+            await asyncio.shield(db.release_account_lease(account_id, lease))
+
+
+async def _run_critical(coroutine):
+    """Finish credential and status commits if the requesting task is cancelled."""
+    task = asyncio.create_task(coroutine)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(task)
+        finally:
+            raise
+
+
+async def _refresh_account(account: dict) -> tuple[str, bool, str]:
+    proxy = account.get("proxy", "") or await _global_proxy()
+    access_token, new_refresh_token = await mail_fetcher.refresh_access_token(
+        account["client_id"],
+        account["refresh_token"],
+        provider_key=account.get("provider", "microsoft"),
+        client_secret=account.get("client_secret", ""),
+        fetch_mode=account.get("fetch_mode", "imap"),
+        proxy=proxy,
+    )
+    persisted = False
+    for attempt in range(3):
+        try:
+            persisted = await db.update_refresh_token_cas(
+                account["id"], account["refresh_token"], new_refresh_token
+            )
+            break
+        except aiosqlite.OperationalError:
+            if attempt == 2:
+                raise
+            await asyncio.sleep(0.1 * (attempt + 1))
+    if not persisted:
+        raise RuntimeError(
+            "Account credentials changed during refresh; retry the operation"
+        )
+    return access_token, new_refresh_token != account["refresh_token"], proxy
+
+
+async def _fetch_and_save_operation(account_id: int, limit: int) -> tuple[int, bool]:
+    async with _account_operation(account_id):
+        current = await db.get_account(account_id)
+        if not current or not current.get("enabled"):
+            raise RuntimeError("Account is no longer active")
+        try:
+            access_token, token_rotated, proxy = await _refresh_account(current)
+            partial_error = None
+            try:
+                result = await mail_fetcher.check_account_with_access_token(
+                    current["email"],
+                    access_token,
+                    provider_key=current.get("provider", "microsoft"),
+                    limit=limit,
+                    fetch_mode=current.get("fetch_mode", "imap"),
+                    proxy=proxy,
+                )
+            except mail_fetcher.MailboxFetchError as exc:
+                result = exc.partial_results
+                partial_error = str(exc)[:500]
+
+            saved = 0
+            for folder, emails in result.items():
+                saved += await db.save_emails(current["id"], folder, emails)
+            total = await db.get_email_count(current["id"])
+            if partial_error:
+                await db.update_account_status(
+                    current["id"], "error", error=partial_error, mail_count=total
+                )
+                raise AccountPartialFetchError(partial_error, saved)
+            await db.update_account_status(current["id"], "active", mail_count=total)
+            return saved, token_rotated
+        except AccountPartialFetchError:
+            raise
+        except Exception as exc:
+            await db.update_account_status(current["id"], "error", error=str(exc)[:500])
+            raise
+
 
 async def _fetch_and_save(account: dict, limit: int) -> tuple[int, bool]:
-    """取件并入库。返回 (新增邮件数, token是否轮换)。抛异常由调用方处理。"""
-    result, new_refresh_token = await mail_fetcher.check_account(
-        account['email'], account['password'],
-        account['client_id'], account['refresh_token'],
-        provider_key=account.get('provider', 'microsoft'),
-        client_secret=account.get('client_secret', ''),
-        limit=limit,
-        fetch_mode=account.get('fetch_mode', 'imap'),
-        proxy=await _global_proxy(),
-    )
-    total_saved = 0
-    for folder, emails in result.items():
-        total_saved += await db.save_emails(account['id'], folder, emails)
-    # 自动保存轮换后的 refresh_token（微软/谷歌每次刷新都会轮换）
-    token_refreshed = bool(new_refresh_token) and new_refresh_token != account['refresh_token']
-    if token_refreshed:
-        await db.update_refresh_token(account['id'], new_refresh_token)
-        logger.info(f"Refreshed token for {account['email']}")
-    # mail_count 记录库内该账号邮件总数（而不是当次新增数）
-    mail_total = await db.get_email_count(account['id'])
-    await db.update_account_status(account['id'], 'active', mail_count=mail_total)
-    return total_saved, token_refreshed
+    return await _run_critical(_fetch_and_save_operation(account["id"], limit))
 
 
 @app.post("/fetch/{account_id}")
 async def fetch_single(request: Request, account_id: int):
-    """Fetch emails for a single account."""
-    _require_auth(request)
+    _require_csrf(request)
     account = await db.get_account(account_id)
     if not account:
         return JSONResponse({"error": "Account not found"}, status_code=404)
-
     try:
-        total_saved, token_refreshed = await _fetch_and_save(account, limit=50)
-        return JSONResponse({"ok": True, "fetched": total_saved,
-                             "token_refreshed": token_refreshed})
-    except Exception as e:
-        await db.update_account_status(account_id, 'error', error=str(e)[:500])
-        return JSONResponse({"ok": False, "error": str(e)[:500]})
+        saved, rotated = await _fetch_and_save(account, 50)
+        return {"ok": True, "fetched": saved, "token_refreshed": rotated}
+    except AccountPartialFetchError as exc:
+        return JSONResponse(
+            {"ok": False, "partial": True, "fetched": exc.saved, "error": str(exc)},
+            status_code=207,
+        )
+    except Exception as exc:  # noqa: BLE001 - translate provider failures to account state
+        message = str(exc)[:500]
+        return JSONResponse({"ok": False, "error": message}, status_code=502)
 
 
 async def _fetch_all_accounts(limit: int) -> dict:
-    """对全部启用账号取件（手动批量/定时健康检测共用）。"""
-    accounts = await db.get_all_active_accounts()
-    sem = asyncio.Semaphore(FETCH_CONCURRENCY)
-    results = {"success": 0, "failed": 0, "total_emails": 0}
+    async with _batch_lock:
+        accounts = await db.get_all_active_accounts()
+        semaphore = asyncio.Semaphore(FETCH_CONCURRENCY)
+        result = {"success": 0, "failed": 0, "total_emails": 0}
 
-    async def fetch_one(acc):
-        async with sem:
-            try:
-                total_saved, _ = await _fetch_and_save(acc, limit=limit)
-                results["success"] += 1
-                results["total_emails"] += total_saved
-            except Exception as e:
-                await db.update_account_status(acc['id'], 'error', error=str(e)[:500])
-                results["failed"] += 1
+        async def fetch_one(account: dict):
+            async with semaphore:
+                try:
+                    saved, _ = await _fetch_and_save(account, limit)
+                    result["success"] += 1
+                    result["total_emails"] += saved
+                except AccountPartialFetchError as exc:
+                    result["failed"] += 1
+                    result["total_emails"] += exc.saved
+                except Exception:  # noqa: BLE001
+                    result["failed"] += 1
 
-    await asyncio.gather(*[fetch_one(a) for a in accounts])
-    return results
+        await asyncio.gather(*(fetch_one(account) for account in accounts))
+        return result
 
 
 @app.post("/fetch-all")
 async def fetch_all(request: Request):
-    """Fetch emails for all active accounts."""
-    _require_auth(request)
-    accounts = await db.get_all_active_accounts()
-    if not accounts:
-        return JSONResponse({"error": "No active accounts"}, status_code=400)
-    return JSONResponse(await _fetch_all_accounts(limit=30))
+    _require_csrf(request)
+    return await _fetch_all_accounts(30)
 
 
 @app.post("/check-all")
 async def check_all(request: Request):
-    """一键健康检测：每账号仅取 1 封验证可用性（轻量，几乎无流量）。
-    失败账号自动标记异常，可用 /?status=error 筛选查看。"""
-    _require_auth(request)
-    accounts = await db.get_all_active_accounts()
-    if not accounts:
-        return JSONResponse({"error": "No active accounts"}, status_code=400)
-    return JSONResponse(await _fetch_all_accounts(limit=1))
+    _require_csrf(request)
+    return await _fetch_all_accounts(1)
 
 
 @app.post("/account/{account_id}/toggle")
-async def toggle_account(request: Request, account_id: int, action: str = Form(...)):
-    _require_auth(request)
-    if action == "disable":
-        await db.disable_account(account_id)
-    elif action == "enable":
-        await db.enable_account(account_id)
-    elif action == "delete":
-        await db.delete_account(account_id)
-    return RedirectResponse("/", status_code=302)
+async def toggle_account(
+    request: Request,
+    account_id: int,
+    action: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+
+    async def toggle_operation():
+        async with _account_operation(account_id):
+            if action == "disable":
+                await db.disable_account(account_id)
+            elif action == "enable":
+                await db.enable_account(account_id)
+            elif action == "delete":
+                await db.delete_account(account_id)
+            else:
+                raise HTTPException(status_code=400, detail="Invalid action")
+
+    try:
+        await _run_critical(toggle_operation())
+    except AccountBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if action == "delete":
+        _account_locks.pop(account_id, None)
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/account/{account_id}/refresh-token")
-async def refresh_token_endpoint(request: Request, account_id: int):
-    """Mark token as refreshed (reset 3-month timer)."""
-    _require_auth(request)
-    await db.refresh_token_date(account_id)
-    return RedirectResponse("/", status_code=302)
+async def refresh_token_endpoint(
+    request: Request, account_id: int, csrf_token: str = Form(...)
+):
+    _require_csrf(request, csrf_token)
+    account = await db.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    async def refresh_operation():
+        async with _account_operation(account_id):
+            current = await db.get_account(account_id)
+            try:
+                await _refresh_account(current)
+                await db.update_account_status(account_id, "active")
+            except Exception as exc:
+                await db.update_account_status(
+                    account_id, "error", error=str(exc)[:500]
+                )
+                raise
+
+    try:
+        await _run_critical(refresh_operation())
+    except Exception as exc:  # noqa: BLE001 - status is committed inside the lease
+        logger.info("Manual token refresh failed: %s", type(exc).__name__)
+    return RedirectResponse("/tokens", status_code=303)
 
 
 @app.get("/account/{account_id}/edit-token", response_class=HTMLResponse)
 async def edit_token_page(request: Request, account_id: int):
-    """更新 refresh_token 页。"""
-    _require_auth(request)
     account = await db.get_account(account_id)
     if not account:
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "edit_token.html", {
-        "account": account,
-    })
+    return _render(request, "edit_token.html", {"account": account})
 
 
 @app.post("/account/{account_id}/edit-token")
-async def update_token(request: Request, account_id: int, new_refresh_token: str = Form(...)):
-    """Update refresh_token for an account."""
-    _require_auth(request)
-    if not new_refresh_token.strip():
-        account = await db.get_account(account_id)
-        return templates.TemplateResponse(request, "edit_token.html", {
-            "account": account, "error": "令牌不能为空",
-        })
-    await db.update_refresh_token(account_id, new_refresh_token.strip())
-    return RedirectResponse("/", status_code=302)
+async def update_token(
+    request: Request,
+    account_id: int,
+    new_refresh_token: str = Form(""),
+    account_proxy: str = Form(""),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+    account = await db.get_account(account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    try:
+        proxy = _validate_proxy(account_proxy)
+    except ValueError as exc:
+        return _render(
+            request, "edit_token.html", {"account": account, "error": str(exc)}, 400
+        )
+
+    async def update_operation():
+        async with _account_operation(account_id):
+            await db.update_account_proxy(account_id, proxy)
+            if new_refresh_token.strip():
+                await db.update_refresh_token(account_id, new_refresh_token.strip())
+
+    try:
+        await _run_critical(update_operation())
+    except AccountBusyError:
+        return _render(
+            request,
+            "edit_token.html",
+            {"account": account, "error": "账号正在取件，请稍后重试"},
+            409,
+        )
+    return RedirectResponse("/", status_code=303)
 
 
 @app.post("/account/{account_id}/prefs")
-async def update_prefs(request: Request, account_id: int, fetch_mode: str = Form("imap")):
-    """列表下拉切换取件方式（imap/graph），JSON 返回。"""
-    _require_auth(request)
-    if fetch_mode not in ("imap", "graph"):
-        fetch_mode = "imap"
+async def update_prefs(
+    request: Request,
+    account_id: int,
+    fetch_mode: str = Form("imap"),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
     account = await db.get_account(account_id)
     if not account:
         return JSONResponse({"error": "Account not found"}, status_code=404)
-    if account.get("provider") != "microsoft":
-        fetch_mode = "imap"  # 非 MS 账号仅支持 IMAP
-    await db.update_account_prefs(account_id, fetch_mode)
-    return JSONResponse({"ok": True, "fetch_mode": fetch_mode})
+    if fetch_mode not in {"imap", "graph"} or account.get("provider") != "microsoft":
+        fetch_mode = "imap"
+    async def prefs_operation():
+        async with _account_operation(account_id):
+            await db.update_account_prefs(account_id, fetch_mode)
 
+    try:
+        await _run_critical(prefs_operation())
+    except AccountBusyError:
+        return JSONResponse({"error": "Account operation is already running"}, status_code=409)
+    return {"ok": True, "fetch_mode": fetch_mode}
 
-# ─────────── 全局设置 ───────────
 
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
-    _require_auth(request)
-    return templates.TemplateResponse(request, "settings.html", {
-        "global_proxy": await _global_proxy(),
-        "proxy_from_env": not bool(await db.get_setting("global_proxy")) and bool(os.environ.get("OMM_PROXY")),
-        "default_ms_fetch_mode": await _default_ms_fetch_mode(),
-        "auto_check_hours": await _auto_check_hours(),
-    })
+    configured_proxy = await db.get_setting("global_proxy")
+    return _render(
+        request,
+        "settings.html",
+        {
+            "global_proxy": configured_proxy
+            if configured_proxy is not None
+            else os.environ.get("OMM_PROXY", ""),
+            "proxy_from_env": configured_proxy is None
+            and bool(os.environ.get("OMM_PROXY")),
+            "default_ms_fetch_mode": await _default_ms_fetch_mode(),
+            "auto_check_hours": await _auto_check_hours(),
+        },
+    )
 
 
 @app.post("/settings")
-async def save_settings(request: Request, global_proxy: str = Form(""),
-                        default_ms_fetch_mode: str = Form("graph"),
-                        auto_check_hours: str = Form("6")):
-    _require_auth(request)
-    if default_ms_fetch_mode not in ("graph", "imap"):
-        default_ms_fetch_mode = "graph"
+async def save_settings(
+    request: Request,
+    global_proxy: str = Form(""),
+    default_ms_fetch_mode: str = Form("graph"),
+    auto_check_hours: str = Form("0"),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
     try:
-        hours = max(0.0, float(auto_check_hours))
-    except ValueError:
-        hours = AUTO_CHECK_DEFAULT_HOURS
-    await db.set_setting("global_proxy", global_proxy.strip())
-    await db.set_setting("default_ms_fetch_mode", default_ms_fetch_mode)
-    await db.set_setting("auto_check_hours", str(hours))
-    return templates.TemplateResponse(request, "settings.html", {
-        "global_proxy": global_proxy.strip(),
-        "proxy_from_env": False,
-        "default_ms_fetch_mode": default_ms_fetch_mode,
-        "auto_check_hours": hours,
-        "success": "设置已保存，立即生效",
-    })
+        proxy = _validate_proxy(global_proxy)
+        hours = float(auto_check_hours)
+        if not math.isfinite(hours) or not 0 <= hours <= 24 * 30:
+            raise ValueError("自动检测间隔超出范围")
+    except ValueError as exc:
+        return _render(
+            request,
+            "settings.html",
+            {
+                "global_proxy": global_proxy,
+                "proxy_from_env": False,
+                "default_ms_fetch_mode": default_ms_fetch_mode,
+                "auto_check_hours": auto_check_hours,
+                "error": str(exc),
+            },
+            400,
+        )
+    if default_ms_fetch_mode not in {"graph", "imap"}:
+        default_ms_fetch_mode = "graph"
+    await db.set_settings(
+        {
+            "global_proxy": proxy,
+            "default_ms_fetch_mode": default_ms_fetch_mode,
+            "auto_check_hours": str(hours),
+        }
+    )
+    return _render(
+        request,
+        "settings.html",
+        {
+            "global_proxy": proxy,
+            "proxy_from_env": False,
+            "default_ms_fetch_mode": default_ms_fetch_mode,
+            "auto_check_hours": hours,
+            "success": "设置已保存",
+        },
+    )
 
 
 @app.post("/accounts/bulk-fetch-mode")
-async def bulk_fetch_mode(request: Request, fetch_mode: str = Form(...)):
-    """一键切换全部现有 Microsoft 账号的取件方式。"""
-    _require_auth(request)
-    if fetch_mode not in ("graph", "imap"):
-        return RedirectResponse("/settings", status_code=302)
-    n = await db.set_all_ms_fetch_mode(fetch_mode)
-    logger.info(f"Bulk switched {n} MS accounts to {fetch_mode}")
-    return templates.TemplateResponse(request, "settings.html", {
-        "global_proxy": await _global_proxy(),
-        "proxy_from_env": False,
-        "default_ms_fetch_mode": await _default_ms_fetch_mode(),
-        "success": f"已将 {n} 个 Microsoft 账号全部切换为 {fetch_mode.upper()} 模式",
-    })
+async def bulk_fetch_mode(
+    request: Request,
+    fetch_mode: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+    if fetch_mode not in {"graph", "imap"}:
+        raise HTTPException(status_code=400, detail="Invalid fetch mode")
+    count = await db.set_all_ms_fetch_mode(fetch_mode)
+    return _render(
+        request,
+        "settings.html",
+        {
+            "global_proxy": await _global_proxy(),
+            "proxy_from_env": False,
+            "default_ms_fetch_mode": await _default_ms_fetch_mode(),
+            "auto_check_hours": await _auto_check_hours(),
+            "success": f"已更新 {count} 个 Microsoft 账号",
+        },
+    )
 
 
 def _export_response(accounts: list[dict]) -> Response:
-    """按导入格式生成导出文件。Gmail 账号第二个字段导出 client_secret，可直接再导入。"""
     lines = []
-    for a in accounts:
-        second = a.get("client_secret") or a.get("password") or ""
-        lines.append("----".join([
-            a["email"], second, a["client_id"], a["refresh_token"]
-        ]))
-    content = "\n".join(lines) + "\n"
-    return Response(
-        content=content,
-        media_type="text/plain; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="accounts_export.txt"'},
+    for account in accounts:
+        second = account.get("client_secret") or ""
+        lines.append(
+            "----".join(
+                [
+                    account["email"],
+                    second,
+                    account["client_id"],
+                    account["refresh_token"],
+                ]
+            )
+        )
+    response = Response("\n".join(lines) + "\n", media_type="text/plain; charset=utf-8")
+    response.headers["Content-Disposition"] = (
+        'attachment; filename="accounts_export.txt"'
     )
-
-
-@app.get("/export")
-async def export_accounts(request: Request, provider: str = "", status: str = "",
-                          fetch_mode: str = "", q: str = ""):
-    """导出账号（不带参数=全部；带筛选参数=当前筛选结果）。"""
-    _require_auth(request)
-    accounts, _ = await db.get_accounts(
-        page=1, per_page=1_000_000,
-        provider=provider or None, status=status or None,
-        fetch_mode=fetch_mode or None, keyword=q.strip() or None,
-    )
-    return _export_response(accounts)
+    response.headers["Cache-Control"] = "no-store, private"
+    response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.post("/export")
-async def export_selected(request: Request, account_id: list[int] = Form([])):
-    """导出勾选的账号。"""
-    _require_auth(request)
-    if not account_id:
-        return JSONResponse({"error": "未选择任何账号"}, status_code=400)
-    accounts = await db.get_accounts_by_ids(account_id)
+async def export_accounts(
+    request: Request,
+    account_id: Annotated[list[str] | None, Form()] = None,
+    current_password: str = Form(...),
+    csrf_token: str = Form(...),
+):
+    _require_csrf(request, csrf_token)
+    if not await db.verify_user(db.ADMIN_USERNAME, current_password):
+        raise HTTPException(status_code=403, detail="Current password is incorrect")
+    if account_id == ["all"]:
+        accounts, _ = await db.get_accounts(page=1, per_page=1_000_000)
+    else:
+        try:
+            ids = [int(value) for value in account_id or []]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="Invalid account selection"
+            ) from exc
+        accounts = await db.get_accounts_by_ids(ids)
+    if not accounts:
+        raise HTTPException(status_code=400, detail="No accounts selected")
     return _export_response(accounts)
 
 
-# ─────────── JSON API ───────────
-
 @app.get("/api/stats")
-async def api_stats(request: Request):
-    _require_auth_api(request)
+async def api_stats():
     return await db.get_stats()
 
 
 @app.get("/api/account/{account_id}/emails")
-async def api_account_emails(request: Request, account_id: int,
-                             folder: str = "", page: int = 1, per_page: int = 50):
-    """邮件分页 JSON（收件箱「加载更多」动态加载用）。"""
-    _require_auth_api(request)
+async def api_account_emails(
+    account_id: int, folder: str = "", page: int = 1, per_page: int = 50
+):
     per_page = max(1, min(per_page, 100))
-    emails, total = await db.get_emails(account_id, folder=folder or None,
-                                        page=page, per_page=per_page)
-    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = max(1, page)
+    emails, total = await db.get_emails(
+        account_id, folder=folder or None, page=page, per_page=per_page
+    )
     return {
         "emails": [
             {
-                "id": em["id"],
-                "from": em["from_addr"],
-                "subject": em["subject"],
-                "date": em["date"],
-                "folder": em["folder"],
+                "id": message["id"],
+                "from": message["from_addr"],
+                "subject": message["subject"],
+                "date": message["date"],
+                "folder": message["folder"],
             }
-            for em in emails
+            for message in emails
         ],
         "page": page,
-        "total_pages": total_pages,
+        "total_pages": max(1, (total + per_page - 1) // per_page),
         "total": total,
     }
 
 
+@app.get("/api/update/status")
+async def update_status():
+    try:
+        return await asyncio.to_thread(
+            update_manager.check_for_update, await _global_proxy()
+        )
+    except update_manager.UpdateError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=502)
+
+
+async def _restart_after_response() -> None:
+    await asyncio.sleep(1.0)
+    update_manager.restart_current_process()
+
+
+@app.post("/api/update/apply")
+async def apply_update(request: Request):
+    _require_csrf(request)
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise TypeError("Update request must be a JSON object")
+        version = str(payload.get("version", ""))
+        result = await asyncio.to_thread(
+            update_manager.apply_update,
+            version,
+            await _global_proxy(),
+        )
+    except (ValueError, TypeError, update_manager.UpdateError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    asyncio.create_task(_restart_after_response())
+    return result
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("OMM_PORT", "8899")))
+
+    uvicorn.run(
+        app,
+        host=os.environ.get("OMM_HOST", "127.0.0.1"),
+        port=int(os.environ.get("OMM_PORT", "8899")),
+        proxy_headers=True,
+        forwarded_allow_ips=os.environ.get("OMM_FORWARDED_ALLOW_IPS", "127.0.0.1"),
+    )

@@ -1,0 +1,111 @@
+{
+  "delete": [],
+  "files": {
+    "VERSION": {
+      "sha256": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
+      "size": 6
+    },
+    "app.py": {
+      "sha256": "92a2fa8013253991f1523a0d8eef11daf3bd4aef10bce5f59cd6510377c6bc5a",
+      "size": 33613
+    },
+    "build_update_manifest.py": {
+      "sha256": "5e41e846f5123c747c1fc501ce308b6e98fcf9fbf26cff5081393237745f2277",
+      "size": 7256
+    },
+    "db.py": {
+      "sha256": "685bf1f0c2327f7318d9cef5789c1cfa5cadb5fec6c3ad1140ddfc4b86898aef",
+      "size": 48013
+    },
+    "email_sanitizer.py": {
+      "sha256": "f98263f476e24b9ee49d4ea068d3fc71a87dba3dc34f92e4ecdce0f921a966bb",
+      "size": 1567
+    },
+    "launcher.py": {
+      "sha256": "56f13b6ea77eb131f41d86e83120af8f5c4e86fcb0d3b148bda64ef1667825af",
+      "size": 2584
+    },
+    "mail_fetcher.py": {
+      "sha256": "33df2fd23d0c7a565140b63fa0f13981663352528287629ef4809d5d4e8a8686",
+      "size": 28700
+    },
+    "requirements.lock": {
+      "sha256": "b7d8042604898e4ac61a8f687192ef708b02cbbfdc58f4ec661debc3dcbf583b",
+      "size": 43538
+    },
+    "requirements.txt": {
+      "sha256": "947f09a6a75e15afb3092ae865b54d9cbfa042f205feeb3d1a091c7ec561c019",
+      "size": 157
+    },
+    "security.py": {
+      "sha256": "61df95d60c02dd6ab08909f02d0f8a6da8e819accd8844b1210d858921512abd",
+      "size": 4103
+    },
+    "smoke_test.py": {
+      "sha256": "fdd0c8536ce108a6563b4869bfb62b0d6ed356b8335d9f98ade06566f116b4cf",
+      "size": 20389
+    },
+    "static/app.js": {
+      "sha256": "743e7e475e0fa2b625a933d2380624ae2a3d6dab33e603767cd6763543649749",
+      "size": 9521
+    },
+    "static/style.css": {
+      "sha256": "9523a134f0b8505b04022ef196358f85be4aa4c9845c905b749bf02572e45516",
+      "size": 8511
+    },
+    "templates/base.html": {
+      "sha256": "28afde7d1200b4604ffe5b765227bd6df7c6083a89333b0d40ae8a256a27cb01",
+      "size": 1446
+    },
+    "templates/edit_token.html": {
+      "sha256": "a1d8598d467471cd8811a11cbf12cfaedaeab96d4a95270a9b15267a65535e28",
+      "size": 2237
+    },
+    "templates/email_detail.html": {
+      "sha256": "34ef424a75bddb6fa76e017e2147162298329e01fe4263c6fe2a7fef4f5be88c",
+      "size": 1225
+    },
+    "templates/import.html": {
+      "sha256": "a0a0b53b232ffba0b71eb55a8fbda6eaf06302732b2d84403af9df371aeb267a",
+      "size": 1912
+    },
+    "templates/inbox.html": {
+      "sha256": "bfb4fed6ffca3d35ebd58d482eda14b628a2ffaff90201dd7c726e4608527ed1",
+      "size": 2690
+    },
+    "templates/index.html": {
+      "sha256": "5c11d880026eeb28acd7a076a6ef23f450c0c265af273907ba2437e8227bec49",
+      "size": 8474
+    },
+    "templates/login.html": {
+      "sha256": "3ee1b0bbbfb6b1c08aee32d8a3f6028d3de210100ee2f798dd3ae60ee18f3de1",
+      "size": 2139
+    },
+    "templates/password.html": {
+      "sha256": "1e51a1aa26facebfd6741067297d6df67edda559d44e468fb2ee6f6e075c0468",
+      "size": 1040
+    },
+    "templates/settings.html": {
+      "sha256": "94e2d18c31c98fd7b2e6f43297071700ec157a61f3b4252183b5b22339f71685",
+      "size": 4408
+    },
+    "templates/tokens.html": {
+      "sha256": "0cfb8a880bbe369b3a43eff89bdcbbd84945c117dd567a67b0c3f9acb11274af",
+      "size": 3477
+    },
+    "update_manager.py": {
+      "sha256": "320f5f55a1de6d3370d20cc9e926245582918362437cfd6a66b308ab8caf9b4e",
+      "size": 53817
+    },
+    "web_security.py": {
+      "sha256": "8647bbf58d5518079f594f03f3bfd4672b8e7e60c22892f3b3bf0ff8ab4dff20",
+      "size": 5140
+    }
+  },
+  "release_version": "1.0.0",
+  "schema_version": 1,
+  "signature": {
+    "algorithm": "ed25519",
+    "value": "+RGpz1PX4IrQJlKF7fxLM5WhxY/4GLsneK51AZu0TNG/0w4yyXLdRhqKA/IJSsOXUN6DCvmaeYi8Z4FKfWt5CA=="
+  }
+}

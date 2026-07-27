@@ -5,7 +5,7 @@
     <div class="card-header">
         <h2>📬 {{ account['email'] }}</h2>
         <div>
-            <button class="btn btn-primary" onclick="fetchAccount({{ account['id'] }}, this)">🔄 取件</button>
+            <button class="btn btn-primary js-fetch-account" data-account-id="{{ account['id'] }}">取件</button>
             <a href="/" class="btn">返回</a>
         </div>
     </div>
@@ -57,59 +57,9 @@
         {% endif %}
     </div>
 </div>
-
-<script>
-(function() {
-    const accountId = {{ account['id'] }};
-    const folder = {{ folder | tojson }};
-    let curPage = {{ page }};
-    let loaded = {{ emails|length }};
-    const total = {{ total }};
-    const btn = document.getElementById('load-more-btn');
-    if (!btn) return;
-
-    btn.addEventListener('click', async function() {
-        btn.disabled = true;
-        btn.textContent = '加载中...';
-        try {
-            const r = await fetch(`/api/account/${accountId}/emails?folder=${encodeURIComponent(folder)}&page=${curPage + 1}`);
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            const d = await r.json();
-            const tbody = document.getElementById('mail-tbody');
-            const emptyRow = document.getElementById('empty-row');
-            if (emptyRow) emptyRow.remove();
-            for (const em of d.emails) {
-                const tr = document.createElement('tr');
-                const tdFrom = document.createElement('td');
-                tdFrom.textContent = (em.from || '').slice(0, 50);
-                const tdSubj = document.createElement('td');
-                const a = document.createElement('a');
-                a.href = '/email/' + em.id;
-                a.textContent = (em.subject || '').slice(0, 80) || '(无主题)';
-                tdSubj.appendChild(a);
-                const tdDate = document.createElement('td');
-                tdDate.textContent = em.date || '-';
-                const tdFolder = document.createElement('td');
-                const badge = document.createElement('span');
-                badge.className = 'badge';
-                badge.textContent = em.folder;
-                tdFolder.appendChild(badge);
-                tr.append(tdFrom, tdSubj, tdDate, tdFolder);
-                tbody.appendChild(tr);
-            }
-            curPage = d.page;
-            loaded += d.emails.length;
-            document.getElementById('page-info').textContent = `已加载 ${loaded} / ${d.total} 封`;
-            if (curPage >= d.total_pages) {
-                btn.remove();
-                return;
-            }
-        } catch (e) {
-            alert('加载失败: ' + e.message);
-        }
-        btn.disabled = false;
-        btn.textContent = '加载更多 ↓';
-    });
-})();
-</script>
+<div id="inbox-state" hidden
+     data-account-id="{{ account['id'] }}"
+     data-folder="{{ folder }}"
+     data-page="{{ page }}"
+     data-loaded="{{ emails|length }}"></div>
 {% endblock %}

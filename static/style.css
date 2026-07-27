@@ -20,10 +20,19 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
 
 /* Nav */
 nav { background: var(--card); border-bottom: 1px solid var(--border); padding: 0 20px; position: sticky; top: 0; z-index: 100; }
-.nav-inner { max-width: 1400px; margin: 0 auto; display: flex; align-items: center; height: 56px; gap: 24px; }
+.nav-inner { max-width: 1400px; margin: 0 auto; display: flex; align-items: center; min-height: 56px; gap: 20px; }
 .logo { color: var(--accent); text-decoration: none; font-size: 18px; font-weight: 700; }
-.nav-links a { color: var(--text2); text-decoration: none; margin-left: 20px; font-size: 14px; }
+.nav-links { display: flex; align-items: center; gap: 18px; margin-left: auto; }
+.nav-links a { color: var(--text2); text-decoration: none; font-size: 14px; }
 .nav-links a:hover { color: var(--text); }
+.nav-logout { display: inline-flex; }
+.nav-link-danger { border: 0; background: transparent; color: var(--red); cursor: pointer; font: inherit; font-size: 14px; padding: 0; }
+.version-widget { min-width: 132px; height: 32px; display: grid; grid-template-columns: auto 1fr; align-items: center; column-gap: 7px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 11px; color: var(--text2); }
+.version-current { color: var(--text); font-weight: 700; }
+.version-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.version-widget.has-update { border-color: var(--orange); }
+.version-update { grid-column: 1 / -1; border: 0; background: transparent; color: var(--orange); cursor: pointer; font-size: 11px; text-align: left; padding: 0; }
+.version-update:disabled { opacity: 0.6; cursor: wait; }
 
 /* Main */
 main { max-width: 1400px; margin: 20px auto; padding: 0 20px; }
@@ -132,6 +141,7 @@ code { background: var(--border); padding: 2px 6px; border-radius: 3px; font-siz
     .stats-bar { flex-direction: column; align-items: flex-start; }
     table { font-size: 12px; }
     td, th { padding: 8px 6px; }
-    .nav-links { display: flex; gap: 8px; }
-    .nav-links a { margin-left: 0; }
+    .nav-inner { flex-wrap: wrap; padding: 8px 0; }
+    .nav-links { order: 3; width: 100%; gap: 12px; overflow-x: auto; }
+    .version-widget { margin-left: auto; }
 }

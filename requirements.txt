@@ -1,7 +1,9 @@
-fastapi>=0.110
-uvicorn>=0.29
-jinja2>=3.1
-python-multipart>=0.0.9
-aiosqlite>=0.20
-requests>=2.31
-PySocks>=1.7.1
+fastapi==0.140.0
+uvicorn==0.51.0
+jinja2==3.1.6
+python-multipart==0.0.32
+aiosqlite==0.22.1
+requests==2.34.2
+PySocks==1.7.1
+cryptography==49.0.0
+bleach==6.4.0

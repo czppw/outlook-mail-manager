@@ -1,27 +1,41 @@
 [Unit]
-Description=OAuth2 Mail Manager (Outlook/Gmail batch mail manager)
-After=network.target
+Description=OAuth2 Mail Manager
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-# 按实际部署路径与用户名修改
-User=root
+User=outlook-mail-manager
+Group=outlook-mail-manager
 WorkingDirectory=/opt/outlook-mail-manager
-ExecStart=/opt/outlook-mail-manager/venv/bin/python app.py
-Restart=on-failure
+ExecStart=/usr/bin/python3 /opt/outlook-mail-manager/launcher.py
+Restart=always
 RestartSec=5
+UMask=0077
 
-# ── 可选环境变量 ──
-# 初始管理员密码（仅首次建库时生效，之后以库内为准，界面可改）
-#Environment=OMM_ADMIN_PASSWORD=please-change-me
-# 全局中转代理（单账号代理可在 Web 设置页单独指定，优先于此）
-#Environment=OMM_PROXY=socks5://user:pass@127.0.0.1:1080
-# 新导入 MS 账号默认取件方式：graph（推荐，默认）或 imap
-#Environment=OMM_MS_FETCH_MODE=graph
-# 监听端口（默认 8899）
-#Environment=OMM_PORT=8899
-# 数据库路径（默认程序目录下 data.db）
-#Environment=OMM_DB_PATH=/opt/outlook-mail-manager/data.db
+Environment=OMM_DB_PATH=/var/lib/outlook-mail-manager/data.db
+Environment=OMM_SECRET_KEY_FILE=/var/lib/outlook-mail-manager/secret.key
+Environment=OMM_SECURE_COOKIE=1
+Environment=OMM_HOST=127.0.0.1
+Environment=OMM_PORT=8899
+EnvironmentFile=-/etc/outlook-mail-manager/env
+
+StateDirectory=outlook-mail-manager
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/outlook-mail-manager /var/lib/outlook-mail-manager
 
 [Install]
 WantedBy=multi-user.target

@@ -21,9 +21,8 @@
 </div>
 
 <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
-    <p><strong>令牌有效期：</strong>{{ token_lifetime_days }} 天（约 3 个月）</p>
-    <p><strong>提醒规则：</strong>过期前 14 天开始提醒</p>
-    <p><strong>操作说明：</strong>令牌即将过期时，用新的 refresh_token 更新账号，或点击「续期」重置计时器</p>
+    <p><strong>提醒依据：</strong>距离上次成功刷新超过 {{ token_lifetime_days }} 天</p>
+    <p><strong>提醒规则：</strong>达到提醒阈值后请验证或替换 refresh token</p>
 </div>
 
 {% if expiring %}
@@ -63,7 +62,8 @@
                 <td>
                     <div style="display: flex; gap: 6px;">
                         <form method="post" action="/account/{{ acc['id'] }}/refresh-token" style="display:inline;">
-                            <button type="submit" class="btn btn-small btn-primary" title="重置3个月计时器">续期</button>
+                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-small btn-primary" title="连接上游验证令牌">验证</button>
                         </form>
                         <a href="/account/{{ acc['id'] }}" class="btn btn-small">查看</a>
                     </div>

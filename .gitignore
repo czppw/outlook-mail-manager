@@ -9,6 +9,11 @@ venv/
 data.db
 data.db-journal
 data.db-wal
+data.db-shm
+secret.key
+.omm-secret.key
+.omm_secret.key
+*.bak
 
 # OS
 .DS_Store
@@ -20,3 +25,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Automatic updater runtime state
+.omm-update/
+.omm-venvs/
+.omm-runtime.json

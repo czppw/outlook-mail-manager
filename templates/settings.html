@@ -8,10 +8,14 @@
 {% if success %}
 <div class="alert alert-success">{{ success }}</div>
 {% endif %}
+{% if error %}
+<div class="alert alert-error">{{ error }}</div>
+{% endif %}
 
 <div class="card" style="max-width: 640px;">
     <h3 style="margin-bottom: 12px;">🌐 中转代理</h3>
     <form method="post" action="/settings">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label>代理地址（全部账号的 token 刷新与取件都走这里；留空为直连）</label>
             <input type="text" name="global_proxy" value="{{ global_proxy }}"
@@ -53,7 +57,8 @@
 <div class="card" style="max-width: 640px;">
     <h3 style="margin-bottom: 12px;">🔀 批量切换现有账号取件方式</h3>
     <form method="post" action="/accounts/bulk-fetch-mode"
-          onsubmit="return confirm('确定将【全部】Microsoft 账号切换为 ' + this.fetch_mode.value.toUpperCase() + ' 吗？');">
+          data-confirm="确定切换全部 Microsoft 账号的取件方式？">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label>一键应用到所有现有 Microsoft 账号（个别账号仍可在列表里用下拉单独调整）</label>
             <div style="display: flex; gap: 10px; align-items: center;">
@@ -71,7 +76,7 @@
     <h3 style="margin-bottom: 12px;">🔧 其他</h3>
     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
         <a href="/password" class="btn">🔑 修改登录密码</a>
-        <a href="/export" class="btn">📤 导出全部账号</a>
+        <button type="button" id="export-all" class="btn">导出全部账号</button>
     </div>
     <p class="hint" style="margin-top: 10px;">导出格式与导入格式一致（<code>邮箱----密码----client_id----refresh_token</code>），含 refresh_token 明文，请妥善保管导出文件。</p>
 </div>

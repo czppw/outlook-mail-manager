@@ -1,81 +1,184 @@
-# OAuth2 邮箱批量管理器
+# Outlook Mail Manager
 
-支持 Outlook/Hotmail/Gmail 等 OAuth2 邮箱的批量管理工具。
+面向 Outlook/Hotmail/Gmail OAuth2 账号的自托管管理工具，提供账号导入、Graph/IMAP 取件、令牌状态、代理配置、邮件查看和签名自动更新。
 
-## 功能
+## 主要功能
 
-- **多供应商支持**：自动识别邮箱域名，配置对应的 IMAP/OAuth2 参数
-  - Microsoft：outlook.com, hotmail.com, live.com, msn.com
-  - Google：gmail.com
-- **双取件模式（Microsoft）**：
-  - **Graph API**（推荐）：应对近期 MS IMAP 风控，新导入 MS 账号默认启用
-  - **IMAP (XOAUTH2)**：传统方式，可在账号设置页随时切换
-  - ⚠️ Graph 模式要求 refresh_token 具有 `Mail.Read` scope；只有 IMAP scope 的旧 token 请切换回 IMAP 模式或换用新 token
-- **中转代理**：全局 `OMM_PROXY` + 单账号代理（设置页可改，优先于全局），支持 socks5/socks5h/socks4/http，token 刷新与取件均走代理
-- **批量导入**：文本粘贴或文件上传，格式 `邮箱----密码----client_id----refresh_token`
-  - 重复导入同一邮箱仅更新凭据，账号状态与历史邮件完整保留
-- **令牌管理**：90 天有效期追踪，取件时自动保存轮换后的新 token，14 天预警 + 手动更新
-- **登录认证**：密码持久化（重启不丢），5 次失败锁定 5 分钟
-- **Web 界面**：深色主题，邮件动态加载（无刷新翻页），按文件夹筛选，邮件去重入库
+- Microsoft Graph API 与 IMAP XOAUTH2 双模式取件。
+- Gmail IMAP OAuth2 取件。
+- 全局 HTTP/SOCKS 代理及账号专用代理；账号代理优先。
+- 批量导入、筛选、健康检测、令牌轮换和稳定 UID 去重。
+- 服务端会话、CSRF、登录限速、scrypt 密码哈希和凭据加密。
+- 邮件 HTML 清洗、沙箱 iframe、CSP 和远程内容阻断。
+- 登录后检查 GitHub Release；有新版本时可在页面一键更新。
 
-## 部署
+## 快速运行
+
+需要 Python 3.11 或更高版本。未设置环境变量时，首次登录用户名为 `admin`、密码为 `admin123`；部署完成后应立即在设置页修改密码。
+
+### Linux/macOS
 
 ```bash
-# 安装依赖
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt
+pip install --require-hashes -r requirements.lock
 
-# 启动服务
+# 可选：覆盖新数据库的默认初始密码
+export OMM_ADMIN_PASSWORD='replace-with-a-long-random-password'
+export OMM_SECRET_KEY_FILE="$PWD/secret.key"
+export OMM_SECURE_COOKIE=0  # 仅限本机 HTTP 调试
 python app.py
-# 访问 http://服务器IP:8899
 ```
 
-默认登录：`admin` / `admin123`（首次登录后请立即在「修改密码」中更换，新密码持久化保存）。
+### Windows PowerShell
 
-## systemd 服务
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+python -m pip install --require-hashes -r requirements.lock
 
-```bash
-sudo cp outlook-mail-manager.service /etc/systemd/system/
-# 按需编辑其中的 WorkingDirectory / Environment
-sudo systemctl enable outlook-mail-manager
-sudo systemctl start outlook-mail-manager
+# 可选：覆盖新数据库的默认初始密码
+$env:OMM_ADMIN_PASSWORD = 'replace-with-a-long-random-password'
+$env:OMM_SECRET_KEY_FILE = "$PWD\secret.key"
+$env:OMM_SECURE_COOKIE = '0'  # 仅限本机 HTTP 调试
+python app.py
 ```
 
-## 环境变量
+本机访问 `http://127.0.0.1:8899`，用户名为 `admin`。
 
-| 变量 | 说明 | 默认 |
-|---|---|---|
-| `OMM_ADMIN_PASSWORD` | 首次建库时的初始管理员密码 | `admin123` |
-| `OMM_PROXY` | 全局中转代理，如 `socks5://user:pass@host:port` | 空（直连） |
-| `OMM_MS_FETCH_MODE` | 新导入 MS 账号默认取件方式：`graph` / `imap` | `graph` |
-| `OMM_PORT` | 监听端口 | `8899` |
-| `OMM_DB_PATH` | 数据库文件路径 | 程序目录 `data.db` |
-
-## 升级（保留数据）
-
-代码变更均为增量迁移，**不会丢数据**：
-
-```bash
-cp data.db data.db.bak          # 建议先备份
-git pull                        # 或上传新代码覆盖（不要覆盖 data.db）
-pip install -r requirements.txt # 新增依赖：requests, PySocks
-sudo systemctl restart outlook-mail-manager
-```
-
-启动时自动完成：新增 `fetch_mode`/`proxy` 列、清理孤儿邮件、去除重复邮件并建唯一索引、文件夹标签统一为 INBOX/JUNK。
+`OMM_ADMIN_PASSWORD` 仅在新建数据库时用于初始化。未设置时使用兼容默认值 `admin123`；数据库已有管理员哈希后，环境变量不会覆盖现有密码。页面修改的新密码至少 8 位，且必须同时包含英文字母和数字。
 
 ## 导入格式
 
-```
-邮箱----密码----client_id----refresh_token
+每行一个账号，使用四个连字符分隔：
+
+```text
+邮箱----第二字段----client_id----refresh_token
 ```
 
-- Microsoft 账号：`client_secret` 留空（密码字段仅存档备用，取件不使用）
-- Gmail 账号：密码字段填写 `client_secret`（Google OAuth2 应用密钥，导入时自动写入正确列）
+- Microsoft：第二字段已不保存，可留空；Graph 模式要求 refresh token 具有 `Mail.Read` 权限。
+- Gmail：第二字段填写 OAuth2 应用的 `client_secret`。
+- 邮箱地址会转为小写；重复导入只更新凭据，保留账号 ID、状态和历史邮件。
 
-## 测试
+## 代理
+
+设置页中的全局代理同时用于：
+
+- OAuth2 token 刷新；
+- Graph API 请求；
+- IMAP 连接；
+- GitHub Release 检查、更新包下载和更新依赖安装。
+
+支持 `http://`、`socks4://`、`socks5://` 和 `socks5h://`。账号页面配置的专用代理优先于全局代理。页面明确保存空值表示直连，不会再次回退到 `OMM_PROXY`。
+
+## 凭据和备份
+
+账号密码、client secret、refresh token 及代理凭据使用 Fernet 加密后写入 SQLite。密钥来源按优先级为：
+
+1. `OMM_SECRET_KEY`：必须是 32 个随机字节的 URL-safe Base64 Fernet key；
+2. `OMM_SECRET_KEY_FILE`：推荐用于部署；
+3. 数据库同目录的 `.omm_secret.key`。
+
+必须把数据库和密钥作为同一个备份集。只恢复 `data.db` 而没有原密钥时，服务会拒绝启动，避免静默生成新密钥造成凭据混用。
 
 ```bash
-python smoke_test.py   # 内置冒烟测试：认证/改密/导入幂等/邮件去重/API鉴权/Graph 字段映射
+sudo systemctl stop outlook-mail-manager
+sudo tar -C /var/lib/outlook-mail-manager -czf omm-backup.tgz data.db secret.key
+sudo systemctl start outlook-mail-manager
 ```
+
+导出功能会返回 refresh token 明文，因此要求再次输入当前管理员密码，并设置 `Cache-Control: no-store`。
+
+## 生产部署
+
+不要直接把 Uvicorn 暴露到公网。应用默认启用 `Secure` Cookie，应由 Nginx/Caddy 提供 HTTPS，并只让应用监听回环地址。
+
+```bash
+sudo useradd --system --home /var/lib/outlook-mail-manager \
+  --shell /usr/sbin/nologin outlook-mail-manager
+sudo install -d -m 0700 -o outlook-mail-manager -g outlook-mail-manager \
+  /opt/outlook-mail-manager /var/lib/outlook-mail-manager
+sudo cp -a . /opt/outlook-mail-manager/
+sudo chown -R outlook-mail-manager:outlook-mail-manager /opt/outlook-mail-manager
+
+sudo -u outlook-mail-manager python3 -m venv /opt/outlook-mail-manager/venv
+sudo -u outlook-mail-manager /opt/outlook-mail-manager/venv/bin/pip \
+  install --require-hashes -r /opt/outlook-mail-manager/requirements.lock
+
+sudo install -m 0644 outlook-mail-manager.service /etc/systemd/system/
+sudo install -d -m 0750 /etc/outlook-mail-manager
+sudo sh -c 'umask 077; cat > /etc/outlook-mail-manager/env <<EOF
+OMM_ADMIN_PASSWORD=replace-with-a-long-random-password
+EOF'
+sudo systemctl daemon-reload
+sudo systemctl enable --now outlook-mail-manager
+```
+
+Nginx 示例：
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name mail-manager.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/mail-manager.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mail-manager.example.com/privkey.pem;
+
+    client_max_body_size 2m;
+    location / {
+        proxy_pass http://127.0.0.1:8899;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+应用使用跨进程单实例锁和数据库账号租约。不要配置 Gunicorn/Uvicorn 多 worker；扩展为多实例前需要重新设计后台调度与重启编排。
+
+## 自动更新
+
+页面版本框在登录后请求 GitHub `releases/latest`。仅当 Release 的语义化版本高于本地 `VERSION` 时显示更新按钮。
+
+更新器会验证：
+
+- HTTPS、允许的 GitHub 下载域名、超时和重定向；
+- Ed25519 签名的版本清单及每个文件的 SHA-256；
+- ZIP 路径、符号链接、设备名、成员数和解压大小；
+- 目标版本必须严格高于当前版本。
+
+更新保留数据库、密钥、`.env`、现有 `venv`、日志和未知本地文件。依赖变化时会依据带哈希的 `requirements.lock` 构建独立的版本虚拟环境，不直接修改当前环境。源码更新使用持久化事务日志；进程中断后，下次启动会先恢复未完成更新。
+
+自动更新依赖正式 GitHub Release。只推送提交或 tag，不会被 `releases/latest` 发现。
+
+## 环境变量
+
+| 变量 | 说明 | 默认值 |
+|---|---|---|
+| `OMM_ADMIN_PASSWORD` | 可选的新数据库初始管理员密码，必须非空 | `admin123` |
+| `OMM_DB_PATH` | SQLite 数据库路径 | 项目目录 `data.db` |
+| `OMM_SECRET_KEY_FILE` | Fernet 密钥文件路径 | 数据库目录 `.omm_secret.key` |
+| `OMM_SECRET_KEY` | 32 字节随机 Fernet key 的 URL-safe Base64 | 无 |
+| `OMM_PROXY` | 未在页面保存设置时使用的全局代理 | 空 |
+| `OMM_MS_FETCH_MODE` | 新 Microsoft 账号默认模式：`graph`/`imap` | `graph` |
+| `OMM_AUTO_CHECK_HOURS` | 未在页面保存设置时的自动检测间隔 | `0` |
+| `OMM_MAX_REQUEST_BYTES` | POST/PUT/PATCH 请求体上限 | `2097152` |
+| `OMM_HOST` | 监听地址 | `127.0.0.1` |
+| `OMM_PORT` | 监听端口 | `8899` |
+| `OMM_SECURE_COOKIE` | Cookie 是否添加 `Secure` | `1` |
+| `OMM_FORWARDED_ALLOW_IPS` | 信任的反向代理地址 | `127.0.0.1` |
+
+`OMM_SECURE_COOKIE=0` 只用于本机 HTTP 测试。
+
+## 测试与审计
+
+```bash
+python -m compileall -q .
+python -m pytest -q
+python smoke_test.py
+ruff check .
+bandit -r app.py db.py mail_fetcher.py security.py update_manager.py web_security.py
+pip-audit -r requirements.txt
+```
+
+详细审查记录见 `SECURITY_REVIEW.md`。
