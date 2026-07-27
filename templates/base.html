@@ -14,7 +14,7 @@
                 <a href="/">账号列表</a>
                 <a href="/import">导入账号</a>
                 <a href="/tokens">令牌状态</a>
-                <a href="/password">修改密码</a>
+                <a href="/settings">设置</a>
                 <a href="/logout" style="color: #f44336;">退出</a>
             </div>
         </div>
@@ -28,19 +28,35 @@
             try {
                 const r = await fetch(`/fetch/${id}`, {method:'POST'});
                 const d = await r.json();
-                if(d.ok) { btn.textContent = `✓ 新增${d.fetched}封`; btn.style.color='#4caf50'; }
-                else { btn.textContent = '✗ 失败'; btn.style.color='#f44336'; btn.title = d.error || ''; }
-            } catch(e) { btn.textContent = '✗ 错误'; btn.style.color='#f44336'; }
-            setTimeout(() => location.reload(), 1500);
+                if (d.ok) {
+                    alert(d.fetched > 0
+                        ? `取件完成：新增 ${d.fetched} 封邮件，点击邮箱地址即可查看`
+                        : '取件完成：没有新邮件（邮箱内容已是最新）');
+                } else {
+                    alert('取件失败：' + (d.error || '未知错误'));
+                }
+            } catch(e) { alert('取件出错：' + e); }
+            location.reload();
         }
         async function fetchAll(btn) {
             btn.disabled = true; btn.textContent = '批量取件中...';
             try {
                 const r = await fetch('/fetch-all', {method:'POST'});
                 const d = await r.json();
-                alert(`成功: ${d.success}, 失败: ${d.failed}, 新增邮件: ${d.total_emails}`);
-            } catch(e) { alert('Error: ' + e); }
+                alert(`批量取件完成\n成功: ${d.success} 个账号, 失败: ${d.failed} 个, 新增邮件: ${d.total_emails} 封` +
+                      (d.failed > 0 ? '\n失败原因见列表「最后错误」列' : ''));
+            } catch(e) { alert('批量取件出错：' + e); }
             location.reload();
+        }
+        async function setFetchMode(id, mode, sel) {
+            try {
+                const fd = new FormData();
+                fd.append('fetch_mode', mode);
+                const r = await fetch(`/account/${id}/prefs`, {method:'POST', body: fd});
+                const d = await r.json();
+                if (!d.ok) { alert('切换失败'); sel.value = sel.dataset.prev; return; }
+                sel.dataset.prev = mode;
+            } catch(e) { alert('切换出错：' + e); sel.value = sel.dataset.prev; }
         }
     </script>
 </body>

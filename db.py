@@ -42,6 +42,15 @@ async def _set_setting(key: str, value: str):
         await db_conn.commit()
 
 
+async def get_setting(key: str):
+    """公开的配置读取（全局代理、默认取件方式等）。"""
+    return await _get_setting(key)
+
+
+async def set_setting(key: str, value: str):
+    await _set_setting(key, value)
+
+
 def _hash_password(password: str) -> str:
     # 个人单用户工具，沿用 sha256；如需更强可换 bcrypt/argon2
     return hashlib.sha256(password.encode()).hexdigest()
@@ -173,11 +182,12 @@ async def change_password(old_password: str, new_password: str) -> bool:
 
 # ─── 账号 ───
 
-async def import_accounts(lines: list[str]) -> dict:
+async def import_accounts(lines: list[str], ms_fetch_mode: str = "graph") -> dict:
     """导入账号。格式：邮箱----密码----client_id----refresh_token
 
     Gmail 账号的「密码」字段实为 client_secret，导入时同步写入 client_secret 列。
     同一邮箱重复导入走 UPDATE，保留 id / 状态 / 历史邮件。
+    ms_fetch_mode：新导入 MS 账号的默认取件方式（graph/imap），由调用方从全局设置解析。
     """
     result = {"added": 0, "updated": 0, "failed": 0, "errors": []}
     for line in lines:
@@ -193,15 +203,16 @@ async def import_accounts(lines: list[str]) -> dict:
         password = parts[1].strip()
         client_id = parts[2].strip()
         refresh_token = parts[3].strip()
-        from mail_fetcher import detect_provider, default_fetch_mode
+        from mail_fetcher import detect_provider
         provider = detect_provider(email_addr)
-        # Gmail：密码字段实际存的是 client_secret
+        # Gmail：密码字段实际存的是 client_secret；Google 仅支持 IMAP
         client_secret = password if provider == "google" else ""
+        fetch_mode = ms_fetch_mode if provider == "microsoft" else "imap"
         try:
             outcome = await add_account(
                 email_addr, password, client_id, refresh_token,
                 provider=provider, client_secret=client_secret,
-                fetch_mode=default_fetch_mode(provider),
+                fetch_mode=fetch_mode,
             )
             result["added" if outcome == "added" else "updated"] += 1
         except Exception as e:
@@ -291,11 +302,11 @@ async def update_refresh_token(account_id: int, new_refresh_token: str):
         await db_conn.commit()
 
 
-async def update_account_prefs(account_id: int, fetch_mode: str, proxy: str):
+async def update_account_prefs(account_id: int, fetch_mode: str):
     async with aiosqlite.connect(DB_PATH) as db_conn:
         await db_conn.execute(
-            "UPDATE accounts SET fetch_mode = ?, proxy = ? WHERE id = ?",
-            (fetch_mode, proxy, account_id)
+            "UPDATE accounts SET fetch_mode = ? WHERE id = ?",
+            (fetch_mode, account_id)
         )
         await db_conn.commit()
 

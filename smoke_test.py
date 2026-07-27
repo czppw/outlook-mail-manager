@@ -222,6 +222,8 @@ def test_http(tmpdir):
         check("HTTP 导入新增 2 个", "新增 <strong>2</strong>" in r.text)
         r = s.post(BASE + "/import", data={"text": "t1@outlook.com----p----cid----rt\nt2@gmail.com----sec----cid----rt2"})
         check("HTTP 重复导入更新 2 个", "更新 <strong>2</strong>" in r.text)
+        r = s.get(BASE + "/")
+        check("OMM_MS_FETCH_MODE=imap 导入默认生效", 'data-prev="imap"' in r.text)
 
         r = s.post(BASE + "/password", data={"old_password": "admin123", "new_password": "testpass456"})
         check("界面改密成功", "密码已修改" in r.text)
@@ -235,6 +237,27 @@ def test_http(tmpdir):
 
         r = s.get(BASE + "/api/account/1/emails")
         check("邮件 API 认证后可用", r.status_code == 200 and "emails" in r.json())
+
+        # 全局设置页
+        r = s.get(BASE + "/settings")
+        check("设置页可访问", r.status_code == 200 and "全局设置" in r.text)
+        r = s.post(BASE + "/settings", data={"global_proxy": "socks5://127.0.0.1:1080",
+                                             "default_ms_fetch_mode": "imap"})
+        check("设置保存成功", "设置已保存" in r.text)
+        r = s.get(BASE + "/settings")
+        check("设置已持久化", "socks5://127.0.0.1:1080" in r.text)
+        s.post(BASE + "/settings", data={"global_proxy": "", "default_ms_fetch_mode": "graph"})
+
+        # 导出账号
+        r = s.get(BASE + "/export")
+        check("导出包含账号且为导入格式",
+              r.status_code == 200 and "t1@outlook.com----p----cid----rt" in r.text)
+        r = requests.get(BASE + "/export", allow_redirects=False)
+        check("导出未认证跳转登录", r.status_code == 302)
+
+        # 列表下拉切换取件方式
+        r = s.post(BASE + "/account/1/prefs", data={"fetch_mode": "graph"})
+        check("下拉切换 Graph 成功", r.status_code == 200 and r.json().get("fetch_mode") == "graph")
     finally:
         proc.terminate()
         proc.wait(timeout=10)
@@ -256,7 +279,7 @@ def test_http(tmpdir):
     rows = con.execute("SELECT id, email, client_secret, fetch_mode FROM accounts ORDER BY id").fetchall()
     con.close()
     check("HTTP 导入 2 个账号", len(rows) == 2)
-    check("OMM_MS_FETCH_MODE=imap 生效", rows[0][3] == "imap")
+    check("下拉切换 fetch_mode 已落库", rows[0][3] == "graph")
     check("Gmail client_secret 经 HTTP 导入正确", rows[1][2] == "sec")
 
 

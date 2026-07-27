@@ -186,6 +186,25 @@ async def change_password(request: Request, old_password: str = Form(...), new_p
     return templates.TemplateResponse(request, "password.html", {"success": "密码已修改，重启后仍然有效"})
 
 
+# ─────────── Global config ───────────
+
+async def _global_proxy() -> str:
+    """全局代理：设置页（settings 表）优先，其次 OMM_PROXY 环境变量。"""
+    p = await db.get_setting("global_proxy")
+    if p:
+        return p
+    return os.environ.get("OMM_PROXY", "").strip()
+
+
+async def _default_ms_fetch_mode() -> str:
+    """新导入 MS 账号的默认取件方式：设置页优先，其次环境变量，默认 graph。"""
+    mode = await db.get_setting("default_ms_fetch_mode")
+    if mode in ("graph", "imap"):
+        return mode
+    env_mode = os.environ.get("OMM_MS_FETCH_MODE", "graph").strip().lower()
+    return "imap" if env_mode == "imap" else "graph"
+
+
 # ─────────── Pages ───────────
 
 def _with_token_days(accounts: list[dict]) -> list[dict]:
@@ -239,7 +258,7 @@ async def do_import(request: Request, text: str = Form(""), file: UploadFile = F
             "error": "请提供账号数据"
         })
 
-    result = await db.import_accounts(lines)
+    result = await db.import_accounts(lines, ms_fetch_mode=await _default_ms_fetch_mode())
     return templates.TemplateResponse(request, "import.html", {
         "result": result
     })
@@ -302,7 +321,7 @@ async def _fetch_and_save(account: dict, limit: int) -> tuple[int, bool]:
         client_secret=account.get('client_secret', ''),
         limit=limit,
         fetch_mode=account.get('fetch_mode', 'imap'),
-        proxy=account.get('proxy', ''),
+        proxy=await _global_proxy(),
     )
     total_saved = 0
     for folder, emails in result.items():
@@ -382,14 +401,13 @@ async def refresh_token_endpoint(request: Request, account_id: int):
 
 @app.get("/account/{account_id}/edit-token", response_class=HTMLResponse)
 async def edit_token_page(request: Request, account_id: int):
-    """账号设置页：更新 refresh_token / 取件方式 / 代理。"""
+    """更新 refresh_token 页。"""
     _require_auth(request)
     account = await db.get_account(account_id)
     if not account:
         return RedirectResponse("/", status_code=302)
     return templates.TemplateResponse(request, "edit_token.html", {
         "account": account,
-        "global_proxy": os.environ.get("OMM_PROXY", ""),
     })
 
 
@@ -401,24 +419,72 @@ async def update_token(request: Request, account_id: int, new_refresh_token: str
         account = await db.get_account(account_id)
         return templates.TemplateResponse(request, "edit_token.html", {
             "account": account, "error": "令牌不能为空",
-            "global_proxy": os.environ.get("OMM_PROXY", ""),
         })
     await db.update_refresh_token(account_id, new_refresh_token.strip())
     return RedirectResponse("/", status_code=302)
 
 
 @app.post("/account/{account_id}/prefs")
-async def update_prefs(request: Request, account_id: int,
-                       fetch_mode: str = Form("imap"), proxy: str = Form("")):
-    """更新取件方式（imap/graph）与代理。"""
+async def update_prefs(request: Request, account_id: int, fetch_mode: str = Form("imap")):
+    """列表下拉切换取件方式（imap/graph），JSON 返回。"""
     _require_auth(request)
     if fetch_mode not in ("imap", "graph"):
         fetch_mode = "imap"
     account = await db.get_account(account_id)
-    if account and account.get("provider") != "microsoft":
+    if not account:
+        return JSONResponse({"error": "Account not found"}, status_code=404)
+    if account.get("provider") != "microsoft":
         fetch_mode = "imap"  # 非 MS 账号仅支持 IMAP
-    await db.update_account_prefs(account_id, fetch_mode, proxy.strip())
-    return RedirectResponse("/", status_code=302)
+    await db.update_account_prefs(account_id, fetch_mode)
+    return JSONResponse({"ok": True, "fetch_mode": fetch_mode})
+
+
+# ─────────── 全局设置 ───────────
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request):
+    _require_auth(request)
+    return templates.TemplateResponse(request, "settings.html", {
+        "global_proxy": await _global_proxy(),
+        "proxy_from_env": not bool(await db.get_setting("global_proxy")) and bool(os.environ.get("OMM_PROXY")),
+        "default_ms_fetch_mode": await _default_ms_fetch_mode(),
+    })
+
+
+@app.post("/settings")
+async def save_settings(request: Request, global_proxy: str = Form(""),
+                        default_ms_fetch_mode: str = Form("graph")):
+    _require_auth(request)
+    if default_ms_fetch_mode not in ("graph", "imap"):
+        default_ms_fetch_mode = "graph"
+    await db.set_setting("global_proxy", global_proxy.strip())
+    await db.set_setting("default_ms_fetch_mode", default_ms_fetch_mode)
+    return templates.TemplateResponse(request, "settings.html", {
+        "global_proxy": global_proxy.strip(),
+        "proxy_from_env": False,
+        "default_ms_fetch_mode": default_ms_fetch_mode,
+        "success": "设置已保存，立即生效",
+    })
+
+
+@app.get("/export")
+async def export_accounts(request: Request):
+    """导出全部账号为导入格式文本（email----密码----client_id----refresh_token）。
+    Gmail 账号第二个字段导出 client_secret，与导入格式一致，可直接用于再导入。"""
+    _require_auth(request)
+    accounts, _ = await db.get_accounts(page=1, per_page=1_000_000)
+    lines = []
+    for a in accounts:
+        second = a.get("client_secret") or a.get("password") or ""
+        lines.append("----".join([
+            a["email"], second, a["client_id"], a["refresh_token"]
+        ]))
+    content = "\n".join(lines) + "\n"
+    return Response(
+        content=content,
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="accounts_export.txt"'},
+    )
 
 
 # ─────────── JSON API ───────────

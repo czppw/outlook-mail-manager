@@ -1,58 +1,18 @@
 {% extends "base.html" %}
-{% block title %}账号设置 - {{ account['email'] }}{% endblock %}
+{% block title %}更新令牌 - {{ account['email'] }}{% endblock %}
 {% block content %}
 <div class="page-header">
-    <h2>⚙️ 账号设置 - {{ account['email'] }}</h2>
+    <h2>🔑 更新 Refresh Token - {{ account['email'] }}</h2>
 </div>
 
 {% if error %}
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
-{% if account.get('provider', 'microsoft') == 'microsoft' %}
 <div class="card" style="max-width: 600px;">
-    <h3 style="margin-bottom: 12px;">📡 取件方式</h3>
-    <form method="post" action="/account/{{ account['id'] }}/prefs">
-        <div class="form-group">
-            <label>接收邮件方式（MS 近期 IMAP 风控，建议使用 Graph）</label>
-            <label style="display:block; margin: 6px 0;">
-                <input type="radio" name="fetch_mode" value="graph"
-                       {{ 'checked' if account.get('fetch_mode') == 'graph' else '' }}> Graph API（推荐，需 token 带 Mail.Read 权限）
-            </label>
-            <label style="display:block; margin: 6px 0;">
-                <input type="radio" name="fetch_mode" value="imap"
-                       {{ 'checked' if account.get('fetch_mode', 'imap') == 'imap' else '' }}> IMAP（传统 XOAUTH2）
-            </label>
-        </div>
-        <div class="form-group">
-            <label>中转代理（留空则{% if global_proxy %}用全局代理 <code>{{ global_proxy }}</code>{% else %}直连{% endif %}）</label>
-            <input type="text" name="proxy" value="{{ account.get('proxy', '') }}"
-                   placeholder="socks5://user:pass@host:port 或 http://host:port">
-            <p class="hint" style="margin-top: 4px;">支持 socks5 / socks5h / socks4 / http 代理，token 刷新与取件都会走该代理。</p>
-        </div>
-        <button type="submit" class="btn btn-primary">保存设置</button>
-    </form>
-</div>
-{% else %}
-<div class="card" style="max-width: 600px;">
-    <h3 style="margin-bottom: 12px;">📡 取件方式与代理</h3>
-    <form method="post" action="/account/{{ account['id'] }}/prefs">
-        <input type="hidden" name="fetch_mode" value="imap">
-        <p class="hint">Gmail 账号使用 IMAP 取件。</p>
-        <div class="form-group">
-            <label>中转代理（留空则{% if global_proxy %}用全局代理 <code>{{ global_proxy }}</code>{% else %}直连{% endif %}）</label>
-            <input type="text" name="proxy" value="{{ account.get('proxy', '') }}"
-                   placeholder="socks5://user:pass@host:port 或 http://host:port">
-        </div>
-        <button type="submit" class="btn btn-primary">保存设置</button>
-    </form>
-</div>
-{% endif %}
-
-<div class="card" style="max-width: 600px;">
-    <h3 style="margin-bottom: 12px;">🔑 更新 Refresh Token</h3>
     <div class="account-info">
-        <span>令牌创建于 {{ account['token_created_at'] or '未知' }}</span>
+        <span>📧 {{ account['email'] }}</span>
+        <span>创建于 {{ account['token_created_at'] or '未知' }}</span>
     </div>
 
     <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
@@ -63,6 +23,7 @@
             <li>上游提供了新的授权码</li>
         </ul>
         <p style="margin-top: 8px;"><strong>自动续期：</strong>每次成功取件后，系统会自动保存返回的新令牌，无需手动更新。</p>
+        <p style="margin-top: 8px;"><strong>取件方式：</strong>在账号列表里用下拉菜单直接切换 Graph / IMAP。</p>
     </div>
 
     <form method="post" action="/account/{{ account['id'] }}/edit-token">

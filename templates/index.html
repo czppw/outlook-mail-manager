@@ -21,6 +21,7 @@
         <h2>账号列表 ({{ total }})</h2>
         <div style="display: flex; gap: 8px;">
             <a href="/import" class="btn btn-sm">+ 导入账号</a>
+            <a href="/export" class="btn btn-sm" title="按导入格式导出全部账号">📤 导出</a>
             <a href="/tokens" class="btn btn-sm">⏰ 令牌管理</a>
         </div>
     </div>
@@ -53,15 +54,15 @@
                 </td>
                 <td>
                     {% if acc.get('provider', 'microsoft') == 'microsoft' %}
-                        {% if acc.get('fetch_mode', 'imap') == 'graph' %}
-                            <span class="badge badge-ok" title="Microsoft Graph API 取件">Graph</span>
-                        {% else %}
-                            <span class="badge" title="IMAP XOAUTH2 取件">IMAP</span>
-                        {% endif %}
+                    <select class="btn btn-sm" style="padding: 2px 6px;"
+                            data-prev="{{ acc.get('fetch_mode', 'imap') }}"
+                            onchange="setFetchMode({{ acc['id'] }}, this.value, this)">
+                        <option value="graph" {{ 'selected' if acc.get('fetch_mode') == 'graph' }}>Graph</option>
+                        <option value="imap" {{ 'selected' if acc.get('fetch_mode', 'imap') == 'imap' }}>IMAP</option>
+                    </select>
                     {% else %}
                         <span class="badge">IMAP</span>
                     {% endif %}
-                    {% if acc.get('proxy') %}<span class="badge badge-warn" title="使用独立代理：{{ acc['proxy'] }}">代理</span>{% endif %}
                 </td>
                 <td>
                     <span class="badge badge-{{ acc['status'] }}">{{ acc['status'] }}</span>
@@ -77,12 +78,12 @@
                         <span class="badge badge-ok" title="创建于 {{ acc['token_created_at'] }}">正常</span>
                     {% endif %}
                 </td>
-                <td>{{ acc['mail_count'] or 0 }}</td>
+                <td><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
                 <td>{{ acc['last_check'] or '-' }}</td>
                 <td class="error-text" title="{{ acc['error'] or '' }}">{{ (acc['error'] or '-')[:40] }}</td>
                 <td class="actions">
                     <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }}, this)">取件</button>
-                    <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="令牌 / 取件方式 / 代理设置">设置</a>
+                    <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="更新 refresh_token">令牌</a>
                     <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline">
                         {% if not acc['enabled'] %}
                             <input type="hidden" name="action" value="enable">
