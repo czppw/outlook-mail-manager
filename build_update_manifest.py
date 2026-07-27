@@ -76,14 +76,18 @@ def _load_previous_files(path: Path | None) -> set[str]:
     return {str(name) for name in files}
 
 
-def _file_record(path: Path) -> dict[str, Any]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as source:
-        while chunk := source.read(128 * 1024):
-            size += len(chunk)
-            digest.update(chunk)
-    return {"sha256": digest.hexdigest(), "size": size}
+def _file_record(content: bytes) -> dict[str, Any]:
+    return {"sha256": hashlib.sha256(content).hexdigest(), "size": len(content)}
+
+
+def _git_index_file(root: Path, path: PurePosixPath) -> bytes:
+    result = subprocess.run(
+        ["git", "show", f":{path.as_posix()}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    return result.stdout
 
 
 def load_private_key(path: Path) -> Ed25519PrivateKey:
@@ -121,6 +125,7 @@ def build_manifest(
 ) -> dict[str, Any]:
     root = root.resolve()
     release_version = version or (root / "VERSION").read_text(encoding="ascii").strip()
+    use_git_index = tracked_paths is None
     paths = tracked_paths if tracked_paths is not None else _git_tracked_files(root)
     files: dict[str, dict[str, Any]] = {}
     for relative in sorted(paths, key=PurePosixPath.as_posix):
@@ -129,7 +134,8 @@ def build_manifest(
         source = root.joinpath(*relative.parts)
         if not source.is_file():
             raise ValueError(f"tracked managed file does not exist: {relative.as_posix()}")
-        files[relative.as_posix()] = _file_record(source)
+        content = _git_index_file(root, relative) if use_git_index else source.read_bytes()
+        files[relative.as_posix()] = _file_record(content)
 
     required = {
         "VERSION",
