@@ -92,6 +92,21 @@ async def init_db():
         """)
         await db_conn.commit()
 
+        # 迁移：兼容旧部署版本的列名差异（某些旧版用 last_error / sender / received_at）
+        async def _columns(table: str) -> set:
+            cur = await db_conn.execute(f"PRAGMA table_info({table})")
+            return {r[1] for r in await cur.fetchall()}
+
+        acc_cols = await _columns("accounts")
+        if "last_error" in acc_cols and "error" not in acc_cols:
+            await db_conn.execute("ALTER TABLE accounts RENAME COLUMN last_error TO error")
+        em_cols = await _columns("emails")
+        if "sender" in em_cols and "from_addr" not in em_cols:
+            await db_conn.execute("ALTER TABLE emails RENAME COLUMN sender TO from_addr")
+        if "received_at" in em_cols and "date" not in em_cols:
+            await db_conn.execute("ALTER TABLE emails RENAME COLUMN received_at TO date")
+        await db_conn.commit()
+
         # 迁移：为旧库添加新列（列已存在时 ALTER 会报错，忽略即可）
         for col, dtype, default in [
             ("provider", "TEXT", "'microsoft'"),
@@ -100,6 +115,10 @@ async def init_db():
             ("proxy", "TEXT", "''"),
             ("enabled", "INTEGER", "1"),
             ("mail_count", "INTEGER", "0"),
+            ("status", "TEXT", "'pending'"),
+            ("last_check", "TEXT", "NULL"),
+            ("token_created_at", "TEXT", "NULL"),
+            ("error", "TEXT", "NULL"),
         ]:
             try:
                 await db_conn.execute(

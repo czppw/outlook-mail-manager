@@ -136,6 +136,49 @@ def test_db_layer(tmpdir):
     asyncio.run(main())
 
 
+# ─────────── Part 2b: 旧版库结构迁移 ───────────
+
+def test_legacy_schema(tmpdir):
+    """某些部署版本用 last_error/sender/received_at 列名，init_db 应自动重命名兼容。"""
+    print("\n== Part 2b: 旧版库结构迁移 ==")
+    path = os.path.join(tmpdir, "legacy.db")
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE accounts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT UNIQUE NOT NULL,
+            password TEXT, client_id TEXT, refresh_token TEXT, status TEXT DEFAULT 'pending',
+            last_check TEXT, last_error TEXT, mail_count INTEGER DEFAULT 0,
+            created_at TEXT, token_created_at TEXT);
+        CREATE TABLE emails (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL,
+            uid TEXT NOT NULL, folder TEXT DEFAULT 'INBOX', sender TEXT, subject TEXT,
+            body TEXT, body_html TEXT, received_at TEXT, is_read INTEGER DEFAULT 0,
+            fetched_at TEXT);
+        INSERT INTO accounts (email, password, client_id, refresh_token)
+        VALUES ('old@outlook.com', 'p', 'c', 'r');
+    """)
+    con.close()
+
+    os.environ["OMM_DB_PATH"] = path
+    import db
+    importlib.reload(db)
+    asyncio.run(db.init_db())
+
+    con = sqlite3.connect(path)
+    acc_cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
+    em_cols = {r[1] for r in con.execute("PRAGMA table_info(emails)")}
+    check("last_error 重命名为 error", "error" in acc_cols and "last_error" not in acc_cols)
+    check("sender 重命名为 from_addr", "from_addr" in em_cols and "sender" not in em_cols)
+    check("received_at 重命名为 date", "date" in em_cols and "received_at" not in em_cols)
+    check("旧账号数据保留", con.execute("SELECT COUNT(*) FROM accounts").fetchone()[0] == 1)
+    con.close()
+
+    n = asyncio.run(db.save_emails(1, "INBOX", [
+        {"uid": "u1", "from": "a", "subject": "s", "body": "", "body_html": "", "date": ""}
+    ]))
+    check("迁移后邮件可正常入库", n == 1)
+
+
 # ─────────── Part 3: HTTP 端到端 ───────────
 
 def _start_server(env):
@@ -222,6 +265,7 @@ def main():
     print(f"测试目录: {tmpdir}")
     test_graph_mapping()
     test_db_layer(tmpdir)
+    test_legacy_schema(tmpdir)
     test_http(tmpdir)
     print("\n" + ("=" * 40))
     if _fails:
