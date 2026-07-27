@@ -79,7 +79,7 @@
                     {% endif %}
                 </td>
                 <td><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
-                <td>{{ acc['last_check'] or '-' }}</td>
+                <td>{{ acc['last_check'] | fmt_dt }}</td>
                 <td class="error-text" title="{{ acc['error'] or '' }}">{{ (acc['error'] or '-')[:40] }}</td>
                 <td class="actions">
                     <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }}, this)">取件</button>

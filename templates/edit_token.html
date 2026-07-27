@@ -12,7 +12,7 @@
 <div class="card" style="max-width: 600px;">
     <div class="account-info">
         <span>📧 {{ account['email'] }}</span>
-        <span>创建于 {{ account['token_created_at'] or '未知' }}</span>
+        <span>创建于 {{ account['token_created_at'] | fmt_dt if account['token_created_at'] else '未知' }}</span>
     </div>
 
     <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">

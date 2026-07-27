@@ -59,7 +59,7 @@
                     <span style="color: #ff9800; font-weight: bold;">{{ acc['days_left'] }} 天</span>
                     {% endif %}
                 </td>
-                <td>{{ acc['token_created_at'] }}</td>
+                <td>{{ acc['token_created_at'] | fmt_dt }}</td>
                 <td>
                     <div style="display: flex; gap: 6px;">
                         <form method="post" action="/account/{{ acc['id'] }}/refresh-token" style="display:inline;">

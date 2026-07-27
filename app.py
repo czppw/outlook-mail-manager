@@ -51,6 +51,32 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
+def fmt_dt(value) -> str:
+    """显示层时间格式化：ISO(带T/微秒/Z) 或 RFC2822 → 'YYYY-MM-DD HH:MM'。
+    带时区的转换为服务器本地时间；解析不了的原样截断返回。"""
+    if not value:
+        return "-"
+    s = str(value).strip()
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return s[:30]
+
+
+templates.env.filters["fmt_dt"] = fmt_dt
+
+
 # ─────────── Auth Helpers ───────────
 
 def _get_session_token(request: Request) -> str | None:
@@ -464,6 +490,22 @@ async def save_settings(request: Request, global_proxy: str = Form(""),
         "proxy_from_env": False,
         "default_ms_fetch_mode": default_ms_fetch_mode,
         "success": "设置已保存，立即生效",
+    })
+
+
+@app.post("/accounts/bulk-fetch-mode")
+async def bulk_fetch_mode(request: Request, fetch_mode: str = Form(...)):
+    """一键切换全部现有 Microsoft 账号的取件方式。"""
+    _require_auth(request)
+    if fetch_mode not in ("graph", "imap"):
+        return RedirectResponse("/settings", status_code=302)
+    n = await db.set_all_ms_fetch_mode(fetch_mode)
+    logger.info(f"Bulk switched {n} MS accounts to {fetch_mode}")
+    return templates.TemplateResponse(request, "settings.html", {
+        "global_proxy": await _global_proxy(),
+        "proxy_from_env": False,
+        "default_ms_fetch_mode": await _default_ms_fetch_mode(),
+        "success": f"已将 {n} 个 Microsoft 账号全部切换为 {fetch_mode.upper()} 模式",
     })
 
 

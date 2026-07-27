@@ -82,6 +82,19 @@ def test_graph_mapping():
           and "Alice" in em["from"] and em["body_html"] == "<b>hi</b>")
 
 
+# ─────────── Part 1c: 时间格式化 ───────────
+
+def test_fmt_dt():
+    print("\n== Part 1c: 时间格式化 ==")
+    from app import fmt_dt
+    check("ISO带T和微秒", fmt_dt("2026-07-27T10:17:05.629267") == "2026-07-27 10:17")
+    check("空值显示-", fmt_dt(None) == "-" and fmt_dt("") == "-")
+    check("RFC2822邮件日期", fmt_dt("Mon, 27 Jul 2026 10:17:05 +0800") == "2026-07-27 10:17")
+    r = fmt_dt("2026-07-27T01:00:00Z")
+    check("UTC(Z)转本地格式", len(r) == 16 and r[4] == "-" and r[10] == " ")
+    check("无法解析原样截断", fmt_dt("some random string") == "some random string")
+
+
 # ─────────── Part 2: DB 层 ───────────
 
 def test_db_layer(tmpdir):
@@ -258,6 +271,10 @@ def test_http(tmpdir):
         # 列表下拉切换取件方式
         r = s.post(BASE + "/account/1/prefs", data={"fetch_mode": "graph"})
         check("下拉切换 Graph 成功", r.status_code == 200 and r.json().get("fetch_mode") == "graph")
+
+        # 批量切换全部 MS 账号
+        r = s.post(BASE + "/accounts/bulk-fetch-mode", data={"fetch_mode": "imap"})
+        check("批量切换全部MS账号", "已将 1 个 Microsoft 账号全部切换为 IMAP 模式" in r.text)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
@@ -279,7 +296,7 @@ def test_http(tmpdir):
     rows = con.execute("SELECT id, email, client_secret, fetch_mode FROM accounts ORDER BY id").fetchall()
     con.close()
     check("HTTP 导入 2 个账号", len(rows) == 2)
-    check("下拉切换 fetch_mode 已落库", rows[0][3] == "graph")
+    check("批量切换后 fetch_mode 落库", rows[0][3] == "imap")
     check("Gmail client_secret 经 HTTP 导入正确", rows[1][2] == "sec")
 
 
@@ -287,6 +304,7 @@ def main():
     tmpdir = tempfile.mkdtemp(prefix="omm_test_")
     print(f"测试目录: {tmpdir}")
     test_graph_mapping()
+    test_fmt_dt()
     test_db_layer(tmpdir)
     test_legacy_schema(tmpdir)
     test_http(tmpdir)

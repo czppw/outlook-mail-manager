@@ -32,10 +32,27 @@
                 <input type="radio" name="default_ms_fetch_mode" value="imap"
                        {{ 'checked' if default_ms_fetch_mode == 'imap' else '' }}> IMAP（传统 XOAUTH2）
             </label>
-            <p class="hint">只影响新导入的账号；已有账号在账号列表里用下拉单独切换。</p>
+            <p class="hint">只影响之后新导入的账号。</p>
         </div>
 
         <button type="submit" class="btn btn-primary">保存设置</button>
+    </form>
+</div>
+
+<div class="card" style="max-width: 640px;">
+    <h3 style="margin-bottom: 12px;">🔀 批量切换现有账号取件方式</h3>
+    <form method="post" action="/accounts/bulk-fetch-mode"
+          onsubmit="return confirm('确定将【全部】Microsoft 账号切换为 ' + this.fetch_mode.value.toUpperCase() + ' 吗？');">
+        <div class="form-group">
+            <label>一键应用到所有现有 Microsoft 账号（个别账号仍可在列表里用下拉单独调整）</label>
+            <div style="display: flex; gap: 10px; align-items: center;">
+                <select name="fetch_mode" class="btn" style="padding: 8px;">
+                    <option value="graph">Graph API（推荐）</option>
+                    <option value="imap">IMAP</option>
+                </select>
+                <button type="submit" class="btn btn-warn">应用到全部账号</button>
+            </div>
+        </div>
     </form>
 </div>
 

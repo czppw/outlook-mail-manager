@@ -18,7 +18,7 @@
         <span class="badge">IMAP</span>
         {% endif %}
         <span>邮件: {{ account['mail_count'] or 0 }}</span>
-        <span>上次取件: {{ account['last_check'] or '未取件' }}</span>
+        <span>上次取件: {{ account['last_check'] | fmt_dt if account['last_check'] else '未取件' }}</span>
     </div>
 
     <div class="folder-tabs">
@@ -41,7 +41,7 @@
             <tr>
                 <td>{{ em['from_addr'][:50] }}</td>
                 <td><a href="/email/{{ em['id'] }}">{{ em['subject'][:80] or '(无主题)' }}</a></td>
-                <td>{{ em['date'] or '-' }}</td>
+                <td>{{ em['date'] | fmt_dt }}</td>
                 <td><span class="badge">{{ em['folder'] }}</span></td>
             </tr>
         {% else %}

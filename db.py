@@ -311,6 +311,17 @@ async def update_account_prefs(account_id: int, fetch_mode: str):
         await db_conn.commit()
 
 
+async def set_all_ms_fetch_mode(fetch_mode: str) -> int:
+    """批量切换全部 Microsoft 账号的取件方式。返回受影响账号数。"""
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        cursor = await db_conn.execute(
+            "UPDATE accounts SET fetch_mode = ? WHERE provider = 'microsoft'",
+            (fetch_mode,)
+        )
+        await db_conn.commit()
+        return cursor.rowcount
+
+
 async def refresh_token_date(account_id: int):
     async with aiosqlite.connect(DB_PATH) as db_conn:
         now = datetime.now().isoformat()
