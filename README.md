@@ -166,6 +166,7 @@ server {
 | `OMM_HOST` | 监听地址 | `127.0.0.1` |
 | `OMM_PORT` | 监听端口 | `8899` |
 | `OMM_SECURE_COOKIE` | Cookie 是否添加 `Secure` | `1` |
+| `OMM_CHECK_ORIGIN` | 是否启用 Origin 来源校验，个人直连可设为 `0` | `1` |
 | `OMM_ALLOWED_ORIGINS` | 反向代理对外地址白名单，多个地址用英文逗号分隔 | 空 |
 | `OMM_FORWARDED_ALLOW_IPS` | 信任的反向代理地址 | `127.0.0.1` |
 

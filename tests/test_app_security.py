@@ -76,6 +76,17 @@ def test_origin_validation_supports_explicit_public_origin(web_app, monkeypatch)
     assert web_app._origin_allowed(malicious) is False
 
 
+def test_origin_check_can_be_disabled_for_personal_direct_access(web_app, monkeypatch):
+    monkeypatch.setattr(web_app, "CHECK_ORIGIN", False)
+    with TestClient(web_app.app, base_url="http://testserver") as client:
+        response = client.post(
+            "/login",
+            data={"username": "x"},
+            headers={"Origin": "http://attacker.test"},
+        )
+    assert response.status_code == 422
+
+
 @pytest.mark.parametrize(
     "origin",
     [

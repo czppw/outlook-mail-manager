@@ -39,6 +39,11 @@ SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "1").strip().lower() not in 
     "false",
     "no",
 }
+CHECK_ORIGIN = os.environ.get("OMM_CHECK_ORIGIN", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "0"))
 
 LOGIN_MAX_FAILS = 5
@@ -244,8 +249,10 @@ async def authenticate_request(request: Request, call_next):
             return JSONResponse({"error": "Unauthorized"}, status_code=401)
         return RedirectResponse("/login", status_code=302)
 
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not _origin_allowed(
-        request
+    if (
+        CHECK_ORIGIN
+        and request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        and not _origin_allowed(request)
     ):
         return JSONResponse({"error": "Invalid request origin"}, status_code=403)
     return await call_next(request)
