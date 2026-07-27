@@ -13,7 +13,7 @@
     <div class="stat active">✅ 活跃: <strong>{{ stats.ok }}</strong></div>
     <div class="stat error">❌ 异常: <strong>{{ stats.error }}</strong></div>
     <div class="stat">📬 邮件总数: <strong>{{ stats.total_emails }}</strong></div>
-    <button id="fetch-all-btn" class="btn btn-primary" onclick="fetchAll()">🔄 全部取件</button>
+    <button id="fetch-all-btn" class="btn btn-primary" onclick="fetchAll(this)">🔄 全部取件</button>
 </div>
 
 <div class="card">
@@ -30,6 +30,7 @@
                 <th>#</th>
                 <th>邮箱</th>
                 <th>供应商</th>
+                <th>取件方式</th>
                 <th>状态</th>
                 <th>令牌</th>
                 <th>邮件数</th>
@@ -44,31 +45,44 @@
                 <td>{{ acc['id'] }}</td>
                 <td><a href="/account/{{ acc['id'] }}">{{ acc['email'] }}</a></td>
                 <td>
-                    {% set provider_name = acc.get('provider', 'microsoft') %}
-                    {% if provider_name == 'google' %}
+                    {% if acc.get('provider', 'microsoft') == 'google' %}
                         <span class="badge badge-google">Gmail</span>
                     {% else %}
                         <span class="badge badge-ms">Microsoft</span>
                     {% endif %}
                 </td>
                 <td>
+                    {% if acc.get('provider', 'microsoft') == 'microsoft' %}
+                        {% if acc.get('fetch_mode', 'imap') == 'graph' %}
+                            <span class="badge badge-ok" title="Microsoft Graph API 取件">Graph</span>
+                        {% else %}
+                            <span class="badge" title="IMAP XOAUTH2 取件">IMAP</span>
+                        {% endif %}
+                    {% else %}
+                        <span class="badge">IMAP</span>
+                    {% endif %}
+                    {% if acc.get('proxy') %}<span class="badge badge-warn" title="使用独立代理：{{ acc['proxy'] }}">代理</span>{% endif %}
+                </td>
+                <td>
                     <span class="badge badge-{{ acc['status'] }}">{{ acc['status'] }}</span>
                 </td>
                 <td>
-                    {% set token_created = acc['token_created_at'] %}
-                    {% if token_created %}
-                        {% set days_elapsed = ((now - token_created).days if now is defined else 0) %}
-                        <span class="badge badge-ok" title="创建于 {{ token_created }}">正常</span>
-                    {% else %}
+                    {% if acc['days_left'] is none %}
                         <span class="badge badge-warn">未知</span>
+                    {% elif acc['days_left'] <= 0 %}
+                        <span class="badge badge-error" title="创建于 {{ acc['token_created_at'] }}">已过期 {{ -acc['days_left'] }}天</span>
+                    {% elif acc['days_left'] <= warning_days %}
+                        <span class="badge badge-warn" title="创建于 {{ acc['token_created_at'] }}">{{ acc['days_left'] }}天后过期</span>
+                    {% else %}
+                        <span class="badge badge-ok" title="创建于 {{ acc['token_created_at'] }}">正常</span>
                     {% endif %}
                 </td>
                 <td>{{ acc['mail_count'] or 0 }}</td>
                 <td>{{ acc['last_check'] or '-' }}</td>
                 <td class="error-text" title="{{ acc['error'] or '' }}">{{ (acc['error'] or '-')[:40] }}</td>
                 <td class="actions">
-                    <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }})">取件</button>
-                    <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="更新授权码">更新令牌</a>
+                    <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }}, this)">取件</button>
+                    <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="令牌 / 取件方式 / 代理设置">设置</a>
                     <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline">
                         {% if not acc['enabled'] %}
                             <input type="hidden" name="action" value="enable">

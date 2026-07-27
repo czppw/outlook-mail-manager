@@ -1,20 +1,50 @@
 """
 数据库层 - SQLite + aiosqlite
 支持多供应商邮箱（Microsoft/Google 等）
+
+数据安全说明：
+- 重新导入同一邮箱使用 UPSERT（保留 id / 状态 / 历史邮件关联）
+- emails 表有 (account_id, folder, uid) 唯一索引，重复取件不会重复入库
+- 管理员密码持久化在 settings 表（重启不丢失），首次启动可用
+  OMM_ADMIN_PASSWORD 环境变量指定初始密码
+- 数据库路径可用 OMM_DB_PATH 环境变量覆盖（便于测试与部署）
 """
 import aiosqlite
 import os
+import hmac
 import hashlib
 from datetime import datetime, timedelta
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
+DB_PATH = os.environ.get(
+    "OMM_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data.db")
+)
 
-# ─── 认证 ───
-# 内存存储，重启后重置为默认密码
-_admin_user = {
-    "username": "admin",
-    "password_hash": hashlib.sha256("admin123".encode()).hexdigest()
-}
+ADMIN_USERNAME = "admin"
+TOKEN_LIFETIME_DAYS = 90
+TOKEN_WARNING_DAYS = 14
+
+
+async def _get_setting(key: str):
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        cursor = await db_conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = await cursor.fetchone()
+        return row[0] if row else None
+
+
+async def _set_setting(key: str, value: str):
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        await db_conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value)
+        )
+        await db_conn.commit()
+
+
+def _hash_password(password: str) -> str:
+    # 个人单用户工具，沿用 sha256；如需更强可换 bcrypt/argon2
+    return hashlib.sha256(password.encode()).hexdigest()
 
 
 async def init_db():
@@ -28,6 +58,8 @@ async def init_db():
                 refresh_token TEXT NOT NULL,
                 provider TEXT DEFAULT 'microsoft',
                 client_secret TEXT DEFAULT '',
+                fetch_mode TEXT DEFAULT 'imap',
+                proxy TEXT DEFAULT '',
                 status TEXT DEFAULT 'pending',
                 enabled INTEGER DEFAULT 1,
                 mail_count INTEGER DEFAULT 0,
@@ -52,37 +84,83 @@ async def init_db():
                 FOREIGN KEY (account_id) REFERENCES accounts(id)
             )
         """)
+        await db_conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        """)
         await db_conn.commit()
-        # 迁移：添加新列
+
+        # 迁移：为旧库添加新列（列已存在时 ALTER 会报错，忽略即可）
         for col, dtype, default in [
             ("provider", "TEXT", "'microsoft'"),
             ("client_secret", "TEXT", "''"),
+            ("fetch_mode", "TEXT", "'imap'"),
+            ("proxy", "TEXT", "''"),
             ("enabled", "INTEGER", "1"),
             ("mail_count", "INTEGER", "0"),
         ]:
             try:
-                await db_conn.execute(f"ALTER TABLE accounts ADD COLUMN {col} {dtype} DEFAULT {default}")
+                await db_conn.execute(
+                    f"ALTER TABLE accounts ADD COLUMN {col} {dtype} DEFAULT {default}"
+                )
                 await db_conn.commit()
-            except:
+            except Exception:
                 pass
 
+        # 迁移：清理孤儿邮件（账号已被 REPLACE/删除导致关联丢失的历史数据）
+        await db_conn.execute(
+            "DELETE FROM emails WHERE account_id NOT IN (SELECT id FROM accounts)"
+        )
+        # 迁移：统一历史文件夹标签（旧版 Gmail 垃圾邮件存为 [Gmail]/Spam）
+        await db_conn.execute("UPDATE emails SET folder = 'JUNK' WHERE folder = '[Gmail]/Spam'")
+        # 迁移：去除重复邮件后再建唯一索引（保留最早一条）
+        await db_conn.execute("""
+            DELETE FROM emails WHERE id NOT IN (
+                SELECT MIN(id) FROM emails GROUP BY account_id, folder, uid
+            )
+        """)
+        await db_conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_emails_dedup
+            ON emails(account_id, folder, uid)
+        """)
+        await db_conn.commit()
 
-def verify_user(username: str, password: str) -> bool:
-    pw_hash = hashlib.sha256(password.encode()).hexdigest()
-    return username == _admin_user["username"] and pw_hash == _admin_user["password_hash"]
+    # 首次启动：播种管理员密码（环境变量优先，否则默认 admin123）
+    if await _get_setting("admin_password_hash") is None:
+        initial = os.environ.get("OMM_ADMIN_PASSWORD", "admin123")
+        await _set_setting("admin_password_hash", _hash_password(initial))
 
 
-def change_password(old_password: str, new_password: str) -> bool:
-    old_hash = hashlib.sha256(old_password.encode()).hexdigest()
-    if old_hash != _admin_user["password_hash"]:
+# ─── 认证 ───
+
+async def verify_user(username: str, password: str) -> bool:
+    if username != ADMIN_USERNAME:
         return False
-    _admin_user["password_hash"] = hashlib.sha256(new_password.encode()).hexdigest()
+    stored = await _get_setting("admin_password_hash")
+    if stored is None:
+        return False
+    return hmac.compare_digest(_hash_password(password), stored)
+
+
+async def change_password(old_password: str, new_password: str) -> bool:
+    stored = await _get_setting("admin_password_hash")
+    if stored is None or not hmac.compare_digest(_hash_password(old_password), stored):
+        return False
+    await _set_setting("admin_password_hash", _hash_password(new_password))
     return True
 
 
+# ─── 账号 ───
+
 async def import_accounts(lines: list[str]) -> dict:
-    """导入账号。格式：邮箱----密码----client_id----refresh_token"""
-    result = {"success": 0, "failed": 0, "errors": []}
+    """导入账号。格式：邮箱----密码----client_id----refresh_token
+
+    Gmail 账号的「密码」字段实为 client_secret，导入时同步写入 client_secret 列。
+    同一邮箱重复导入走 UPDATE，保留 id / 状态 / 历史邮件。
+    """
+    result = {"added": 0, "updated": 0, "failed": 0, "errors": []}
     for line in lines:
         line = line.strip()
         if not line or line.startswith('#'):
@@ -92,13 +170,21 @@ async def import_accounts(lines: list[str]) -> dict:
             result["failed"] += 1
             result["errors"].append(f"格式错误: {line[:30]}...")
             continue
-        email_addr, password, client_id, refresh_token = parts[0].strip(), parts[1].strip(), parts[2].strip(), parts[3].strip()
-        # 自动识别供应商
-        from mail_fetcher import detect_provider
+        email_addr = parts[0].strip()
+        password = parts[1].strip()
+        client_id = parts[2].strip()
+        refresh_token = parts[3].strip()
+        from mail_fetcher import detect_provider, default_fetch_mode
         provider = detect_provider(email_addr)
+        # Gmail：密码字段实际存的是 client_secret
+        client_secret = password if provider == "google" else ""
         try:
-            await add_account(email_addr, password, client_id, refresh_token, provider)
-            result["success"] += 1
+            outcome = await add_account(
+                email_addr, password, client_id, refresh_token,
+                provider=provider, client_secret=client_secret,
+                fetch_mode=default_fetch_mode(provider),
+            )
+            result["added" if outcome == "added" else "updated"] += 1
         except Exception as e:
             result["failed"] += 1
             result["errors"].append(f"{email_addr}: {str(e)[:50]}")
@@ -106,14 +192,30 @@ async def import_accounts(lines: list[str]) -> dict:
 
 
 async def add_account(email: str, password: str, client_id: str, refresh_token: str,
-                      provider: str = "microsoft", client_secret: str = ""):
+                      provider: str = "microsoft", client_secret: str = "",
+                      fetch_mode: str = "imap") -> str:
+    """新增或更新账号。重复邮箱只更新凭据字段，保留 id/状态/邮件关联。
+    返回 'added' 或 'updated'。"""
     async with aiosqlite.connect(DB_PATH) as db_conn:
         now = datetime.now().isoformat()
+        cursor = await db_conn.execute("SELECT id FROM accounts WHERE email = ?", (email,))
+        row = await cursor.fetchone()
+        if row:
+            await db_conn.execute("""
+                UPDATE accounts
+                SET password = ?, client_id = ?, refresh_token = ?,
+                    provider = ?, client_secret = ?, token_created_at = ?
+                WHERE email = ?
+            """, (password, client_id, refresh_token, provider, client_secret, now, email))
+            await db_conn.commit()
+            return "updated"
         await db_conn.execute("""
-            INSERT OR REPLACE INTO accounts (email, password, client_id, refresh_token, provider, client_secret, token_created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (email, password, client_id, refresh_token, provider, client_secret, now))
+            INSERT INTO accounts
+                (email, password, client_id, refresh_token, provider, client_secret, fetch_mode, token_created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (email, password, client_id, refresh_token, provider, client_secret, fetch_mode, now))
         await db_conn.commit()
+        return "added"
 
 
 async def get_accounts(page: int = 1, per_page: int = 50):
@@ -170,6 +272,15 @@ async def update_refresh_token(account_id: int, new_refresh_token: str):
         await db_conn.commit()
 
 
+async def update_account_prefs(account_id: int, fetch_mode: str, proxy: str):
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        await db_conn.execute(
+            "UPDATE accounts SET fetch_mode = ?, proxy = ? WHERE id = ?",
+            (fetch_mode, proxy, account_id)
+        )
+        await db_conn.commit()
+
+
 async def refresh_token_date(account_id: int):
     async with aiosqlite.connect(DB_PATH) as db_conn:
         now = datetime.now().isoformat()
@@ -177,24 +288,34 @@ async def refresh_token_date(account_id: int):
         await db_conn.commit()
 
 
+# ─── 邮件 ───
+
 async def save_emails(account_id: int, folder: str, emails: list[dict]) -> int:
+    """入库邮件，(account_id, folder, uid) 唯一，重复自动忽略。返回真实新增数。"""
     async with aiosqlite.connect(DB_PATH) as db_conn:
         count = 0
         for em in emails:
-            try:
-                await db_conn.execute("""
-                    INSERT INTO emails (account_id, folder, uid, from_addr, subject, body, body_html, date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (account_id, folder, em.get('uid', ''), em.get('from', ''),
-                      em.get('subject', ''), em.get('body', ''), em.get('body_html', ''), em.get('date', '')))
-                count += 1
-            except:
-                pass
+            cursor = await db_conn.execute("""
+                INSERT OR IGNORE INTO emails
+                    (account_id, folder, uid, from_addr, subject, body, body_html, date)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (account_id, folder, em.get('uid', ''), em.get('from', ''),
+                  em.get('subject', ''), em.get('body', ''), em.get('body_html', ''),
+                  em.get('date', '')))
+            count += cursor.rowcount
         await db_conn.commit()
         return count
 
 
-async def get_emails(account_id: int, folder: str = None, limit: int = 50, page: int = 1, per_page: int = 50):
+async def get_email_count(account_id: int) -> int:
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        cursor = await db_conn.execute(
+            "SELECT COUNT(*) FROM emails WHERE account_id = ?", (account_id,)
+        )
+        return (await cursor.fetchone())[0]
+
+
+async def get_emails(account_id: int, folder: str = None, page: int = 1, per_page: int = 50):
     async with aiosqlite.connect(DB_PATH) as db_conn:
         db_conn.row_factory = aiosqlite.Row
         offset = (page - 1) * per_page
@@ -228,10 +349,10 @@ async def get_email(email_id: int):
         return dict(row) if row else None
 
 
-async def get_expiring_accounts(warning_days: int = 14):
+async def get_expiring_accounts(warning_days: int = TOKEN_WARNING_DAYS):
     async with aiosqlite.connect(DB_PATH) as db_conn:
         db_conn.row_factory = aiosqlite.Row
-        threshold = (datetime.now() - timedelta(days=90 - warning_days)).isoformat()
+        threshold = (datetime.now() - timedelta(days=TOKEN_LIFETIME_DAYS - warning_days)).isoformat()
         cursor = await db_conn.execute("""
             SELECT * FROM accounts WHERE token_created_at IS NOT NULL AND token_created_at < ?
         """, (threshold,))
@@ -249,7 +370,8 @@ async def get_stats():
         err = (await cursor.fetchone())[0]
         cursor = await db_conn.execute("SELECT COUNT(*) FROM emails")
         total_emails = (await cursor.fetchone())[0]
-        return {"total": total, "ok": ok, "error": err, "pending": total - ok - err, "total_emails": total_emails}
+        return {"total": total, "ok": ok, "error": err, "pending": total - ok - err,
+                "total_emails": total_emails}
 
 
 async def disable_account(account_id: int):

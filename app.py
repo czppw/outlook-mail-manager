@@ -1,15 +1,17 @@
 """
 OAuth2 邮箱批量管理器 - FastAPI 应用
-支持 Outlook/Hotmail/Gmail 等 OAuth2 IMAP 邮箱。
-功能：导入账号、自动识别供应商、OAuth2 IMAP 取件、Web 界面查看邮件、登录认证、令牌过期管理
+支持 Outlook/Hotmail/Gmail 等 OAuth2 邮箱。
+功能：导入账号、自动识别供应商、IMAP/Graph 取件、代理支持、
+     Web 界面查看邮件（动态加载）、登录认证（限速）、令牌过期管理
 """
 import asyncio
 import logging
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request, Form, UploadFile, File, Depends, Response
+from fastapi import FastAPI, Request, Form, UploadFile, File, Response
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -18,6 +20,8 @@ import mail_fetcher
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Batch fetch concurrency limit
 FETCH_CONCURRENCY = 5
@@ -30,6 +34,11 @@ SESSION_MAX_AGE = 86400 * 7  # 7 days
 # Simple in-memory session store
 _sessions: dict[str, dict] = {}
 
+# Login rate limiting: ip -> [fail_count, locked_until_ts]
+LOGIN_MAX_FAILS = 5
+LOGIN_LOCK_SECONDS = 300
+_login_fails: dict[str, list] = {}
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,8 +47,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="OAuth2 Mail Manager", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
 
 
 # ─────────── Auth Helpers ───────────
@@ -78,9 +87,42 @@ def _create_session(response: Response, username: str):
 class AuthRequired(Exception):
     pass
 
+
 def _require_auth(request: Request):
     if not _is_authenticated(request):
         raise AuthRequired()
+
+
+def _require_auth_api(request: Request):
+    """API 端点未认证时返回 401 JSON，而不是重定向。"""
+    if not _is_authenticated(request):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+def _login_locked(ip: str) -> int:
+    """返回剩余锁定秒数，未锁定返回 0。"""
+    rec = _login_fails.get(ip)
+    if rec and rec[1] > time.time():
+        return int(rec[1] - time.time())
+    return 0
+
+
+def _record_login_fail(ip: str):
+    rec = _login_fails.setdefault(ip, [0, 0.0])
+    rec[0] += 1
+    if rec[0] >= LOGIN_MAX_FAILS:
+        rec[1] = time.time() + LOGIN_LOCK_SECONDS
+        rec[0] = 0
+        logger.warning(f"Login locked for {ip} ({LOGIN_LOCK_SECONDS}s) after {LOGIN_MAX_FAILS} fails")
+
+
+def _clear_login_fail(ip: str):
+    _login_fails.pop(ip, None)
 
 
 # ─────────── Login / Logout ───────────
@@ -99,10 +141,18 @@ async def login_page(request: Request):
 
 @app.post("/login")
 async def do_login(request: Request, username: str = Form(...), password: str = Form(...)):
-    if db.verify_user(username, password):
+    ip = _client_ip(request)
+    locked = _login_locked(ip)
+    if locked:
+        return templates.TemplateResponse(request, "login.html", {
+            "error": f"尝试次数过多，请 {locked // 60 + 1} 分钟后再试"
+        })
+    if await db.verify_user(username, password):
+        _clear_login_fail(ip)
         resp = RedirectResponse("/", status_code=302)
         _create_session(resp, username)
         return resp
+    _record_login_fail(ip)
     return templates.TemplateResponse(request, "login.html", {
         "error": "用户名或密码错误"
     })
@@ -127,31 +177,43 @@ async def password_page(request: Request):
 @app.post("/password")
 async def change_password(request: Request, old_password: str = Form(...), new_password: str = Form(...)):
     _require_auth(request)
-    token = _get_session_token(request)
-    username = _sessions.get(token, {}).get("user", "admin")
-    
-    if not db.verify_user(username, old_password):
-        return templates.TemplateResponse(request, "password.html", {"error": "旧密码错误"})
-    
     if len(new_password) < 6:
         return templates.TemplateResponse(request, "password.html", {"error": "密码至少6位"})
-    
-    db.change_password(username, new_password)
-    return templates.TemplateResponse(request, "password.html", {"success": "密码已修改"})
+
+    ok = await db.change_password(old_password, new_password)
+    if not ok:
+        return templates.TemplateResponse(request, "password.html", {"error": "旧密码错误"})
+    return templates.TemplateResponse(request, "password.html", {"success": "密码已修改，重启后仍然有效"})
 
 
 # ─────────── Pages ───────────
+
+def _with_token_days(accounts: list[dict]) -> list[dict]:
+    """为账号列表计算令牌剩余天数（None 表示未知）。"""
+    now = datetime.now()
+    for acc in accounts:
+        acc["days_left"] = None
+        if acc.get("token_created_at"):
+            try:
+                created = datetime.fromisoformat(acc["token_created_at"])
+                acc["days_left"] = (created + timedelta(days=db.TOKEN_LIFETIME_DAYS) - now).days
+            except ValueError:
+                pass
+    return accounts
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request, page: int = 1):
     _require_auth(request)
     accounts, total = await db.get_accounts(page=page, per_page=50)
+    _with_token_days(accounts)
     stats = await db.get_stats()
-    expiring = await db.get_expiring_accounts(warning_days=14)
+    expiring = await db.get_expiring_accounts()
     total_pages = max(1, (total + 49) // 50)
     return templates.TemplateResponse(request, "index.html", {
         "accounts": accounts, "stats": stats,
         "expiring": expiring,
+        "warning_days": db.TOKEN_WARNING_DAYS,
         "page": page, "total_pages": total_pages, "total": total
     })
 
@@ -179,35 +241,27 @@ async def do_import(request: Request, text: str = Form(""), file: UploadFile = F
 
     result = await db.import_accounts(lines)
     return templates.TemplateResponse(request, "import.html", {
-                "result": result
-            })
+        "result": result
+    })
 
 
 @app.get("/tokens", response_class=HTMLResponse)
 async def token_status_page(request: Request):
     """Token expiration overview page."""
     _require_auth(request)
-    from datetime import datetime, timedelta
-    now = datetime.now()
     all_accounts = await db.get_all_active_accounts()
+    _with_token_days(all_accounts)
     stats = await db.get_stats()
 
-    TOKEN_LIFETIME_DAYS = 90
-    expiring = []
-    for acc in all_accounts:
-        if acc.get('token_created_at'):
-            created = datetime.fromisoformat(acc['token_created_at'])
-            expires_at = created + timedelta(days=TOKEN_LIFETIME_DAYS)
-            days_left = (expires_at - now).days
-            acc['days_left'] = days_left
-            if days_left <= 30:
-                expiring.append(acc)
-    expiring.sort(key=lambda x: x['days_left'])
+    expiring = [a for a in all_accounts
+                if a["days_left"] is not None and a["days_left"] <= db.TOKEN_WARNING_DAYS]
+    expiring.sort(key=lambda x: x["days_left"])
 
     return templates.TemplateResponse(request, "tokens.html", {
         "expiring": expiring,
         "stats": stats,
-        "token_lifetime_days": TOKEN_LIFETIME_DAYS,
+        "token_lifetime_days": db.TOKEN_LIFETIME_DAYS,
+        "warning_days": db.TOKEN_WARNING_DAYS,
     })
 
 
@@ -239,6 +293,31 @@ async def email_detail(request: Request, email_id: int):
 
 # ─────────── Actions ───────────
 
+async def _fetch_and_save(account: dict, limit: int) -> tuple[int, bool]:
+    """取件并入库。返回 (新增邮件数, token是否轮换)。抛异常由调用方处理。"""
+    result, new_refresh_token = await mail_fetcher.check_account(
+        account['email'], account['password'],
+        account['client_id'], account['refresh_token'],
+        provider_key=account.get('provider', 'microsoft'),
+        client_secret=account.get('client_secret', ''),
+        limit=limit,
+        fetch_mode=account.get('fetch_mode', 'imap'),
+        proxy=account.get('proxy', ''),
+    )
+    total_saved = 0
+    for folder, emails in result.items():
+        total_saved += await db.save_emails(account['id'], folder, emails)
+    # 自动保存轮换后的 refresh_token（微软/谷歌每次刷新都会轮换）
+    token_refreshed = bool(new_refresh_token) and new_refresh_token != account['refresh_token']
+    if token_refreshed:
+        await db.update_refresh_token(account['id'], new_refresh_token)
+        logger.info(f"Refreshed token for {account['email']}")
+    # mail_count 记录库内该账号邮件总数（而不是当次新增数）
+    mail_total = await db.get_email_count(account['id'])
+    await db.update_account_status(account['id'], 'active', mail_count=mail_total)
+    return total_saved, token_refreshed
+
+
 @app.post("/fetch/{account_id}")
 async def fetch_single(request: Request, account_id: int):
     """Fetch emails for a single account."""
@@ -248,24 +327,9 @@ async def fetch_single(request: Request, account_id: int):
         return JSONResponse({"error": "Account not found"}, status_code=404)
 
     try:
-        result, new_refresh_token = await mail_fetcher.check_account(
-            account['email'], account['password'],
-            account['client_id'], account['refresh_token'],
-            provider_key=account.get('provider', 'microsoft'),
-            client_secret=account.get('client_secret', ''),
-            limit=50
-        )
-        total_saved = 0
-        for folder, emails in result.items():
-            saved = await db.save_emails(account_id, folder, emails)
-            total_saved += saved
-        # Auto-save new refresh_token (Microsoft rotates it)
-        if new_refresh_token and new_refresh_token != account['refresh_token']:
-            await db.update_refresh_token(account_id, new_refresh_token)
-            logger.info(f"Refreshed token for {account['email']}")
-        await db.update_account_status(account_id, 'active', mail_count=total_saved)
-        return JSONResponse({"ok": True, "fetched": total_saved, "folders": list(result.keys()),
-                             "token_refreshed": new_refresh_token != account['refresh_token']})
+        total_saved, token_refreshed = await _fetch_and_save(account, limit=50)
+        return JSONResponse({"ok": True, "fetched": total_saved,
+                             "token_refreshed": token_refreshed})
     except Exception as e:
         await db.update_account_status(account_id, 'error', error=str(e)[:500])
         return JSONResponse({"ok": False, "error": str(e)[:500]})
@@ -285,23 +349,9 @@ async def fetch_all(request: Request):
     async def fetch_one(acc):
         async with sem:
             try:
-                result, new_refresh_token = await mail_fetcher.check_account(
-                    acc['email'], acc['password'],
-                    acc['client_id'], acc['refresh_token'],
-                    provider_key=acc.get('provider', 'microsoft'),
-                    client_secret=acc.get('client_secret', ''),
-                    limit=30
-                )
-                total = 0
-                for folder, emails in result.items():
-                    saved = await db.save_emails(acc['id'], folder, emails)
-                    total += saved
-                # Auto-save new refresh_token
-                if new_refresh_token and new_refresh_token != acc['refresh_token']:
-                    await db.update_refresh_token(acc['id'], new_refresh_token)
-                await db.update_account_status(acc['id'], 'active', mail_count=total)
+                total_saved, _ = await _fetch_and_save(acc, limit=30)
                 results["success"] += 1
-                results["total_emails"] += total
+                results["total_emails"] += total_saved
             except Exception as e:
                 await db.update_account_status(acc['id'], 'error', error=str(e)[:500])
                 results["failed"] += 1
@@ -332,12 +382,15 @@ async def refresh_token_endpoint(request: Request, account_id: int):
 
 @app.get("/account/{account_id}/edit-token", response_class=HTMLResponse)
 async def edit_token_page(request: Request, account_id: int):
-    """Page to manually update refresh_token."""
+    """账号设置页：更新 refresh_token / 取件方式 / 代理。"""
     _require_auth(request)
     account = await db.get_account(account_id)
     if not account:
         return RedirectResponse("/", status_code=302)
-    return templates.TemplateResponse(request, "edit_token.html", {"account": account})
+    return templates.TemplateResponse(request, "edit_token.html", {
+        "account": account,
+        "global_proxy": os.environ.get("OMM_PROXY", ""),
+    })
 
 
 @app.post("/account/{account_id}/edit-token")
@@ -347,17 +400,61 @@ async def update_token(request: Request, account_id: int, new_refresh_token: str
     if not new_refresh_token.strip():
         account = await db.get_account(account_id)
         return templates.TemplateResponse(request, "edit_token.html", {
-            "account": account, "error": "令牌不能为空"
+            "account": account, "error": "令牌不能为空",
+            "global_proxy": os.environ.get("OMM_PROXY", ""),
         })
     await db.update_refresh_token(account_id, new_refresh_token.strip())
     return RedirectResponse("/", status_code=302)
 
 
+@app.post("/account/{account_id}/prefs")
+async def update_prefs(request: Request, account_id: int,
+                       fetch_mode: str = Form("imap"), proxy: str = Form("")):
+    """更新取件方式（imap/graph）与代理。"""
+    _require_auth(request)
+    if fetch_mode not in ("imap", "graph"):
+        fetch_mode = "imap"
+    account = await db.get_account(account_id)
+    if account and account.get("provider") != "microsoft":
+        fetch_mode = "imap"  # 非 MS 账号仅支持 IMAP
+    await db.update_account_prefs(account_id, fetch_mode, proxy.strip())
+    return RedirectResponse("/", status_code=302)
+
+
+# ─────────── JSON API ───────────
+
 @app.get("/api/stats")
-async def api_stats():
+async def api_stats(request: Request):
+    _require_auth_api(request)
     return await db.get_stats()
+
+
+@app.get("/api/account/{account_id}/emails")
+async def api_account_emails(request: Request, account_id: int,
+                             folder: str = "", page: int = 1, per_page: int = 50):
+    """邮件分页 JSON（收件箱「加载更多」动态加载用）。"""
+    _require_auth_api(request)
+    per_page = max(1, min(per_page, 100))
+    emails, total = await db.get_emails(account_id, folder=folder or None,
+                                        page=page, per_page=per_page)
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    return {
+        "emails": [
+            {
+                "id": em["id"],
+                "from": em["from_addr"],
+                "subject": em["subject"],
+                "date": em["date"],
+                "folder": em["folder"],
+            }
+            for em in emails
+        ],
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8899)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("OMM_PORT", "8899")))

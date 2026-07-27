@@ -5,6 +5,7 @@
     <h2>📥 导入邮箱账号</h2>
     <p class="hint">格式：每行一个账号，用 <code>----</code> 分隔</p>
     <p class="hint"><code>邮箱----密码----client_id----refresh_token</code></p>
+    <p class="hint">Gmail 账号的「密码」字段填 <code>client_secret</code>。重复导入同一邮箱只会更新凭据，历史邮件和状态保留。</p>
 
     {% if error %}
     <div class="alert alert-error">{{ error }}</div>
@@ -12,7 +13,7 @@
 
     {% if result %}
     <div class="alert alert-success">
-        ✅ 新增 <strong>{{ result.added }}</strong> 个，跳过 <strong>{{ result.skipped }}</strong> 个重复
+        ✅ 新增 <strong>{{ result.added }}</strong> 个，更新 <strong>{{ result.updated }}</strong> 个，失败 <strong>{{ result.failed }}</strong> 个
         {% if result.errors %}
         <br>❌ 错误：
         <ul>

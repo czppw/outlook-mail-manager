@@ -5,13 +5,18 @@
     <div class="card-header">
         <h2>📬 {{ account['email'] }}</h2>
         <div>
-            <button class="btn btn-primary" onclick="fetchAccount({{ account['id'] }})">🔄 取件</button>
+            <button class="btn btn-primary" onclick="fetchAccount({{ account['id'] }}, this)">🔄 取件</button>
             <a href="/" class="btn">返回</a>
         </div>
     </div>
 
     <div class="account-info">
         <span class="badge badge-{{ account['status'] }}">{{ account['status'] }}</span>
+        {% if account.get('provider') == 'microsoft' and account.get('fetch_mode') == 'graph' %}
+        <span class="badge badge-ok">Graph</span>
+        {% else %}
+        <span class="badge">IMAP</span>
+        {% endif %}
         <span>邮件: {{ account['mail_count'] or 0 }}</span>
         <span>上次取件: {{ account['last_check'] or '未取件' }}</span>
     </div>
@@ -31,7 +36,7 @@
                 <th>文件夹</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="mail-tbody">
         {% for em in emails %}
             <tr>
                 <td>{{ em['from_addr'][:50] }}</td>
@@ -40,17 +45,71 @@
                 <td><span class="badge">{{ em['folder'] }}</span></td>
             </tr>
         {% else %}
-            <tr><td colspan="4" class="empty">暂无邮件，点击上方「取件」按钮获取</td></tr>
+            <tr id="empty-row"><td colspan="4" class="empty">暂无邮件，点击上方「取件」按钮获取</td></tr>
         {% endfor %}
         </tbody>
     </table>
 
-    {% if total_pages > 1 %}
-    <div class="pagination">
-        {% if page > 1 %}<a href="?folder={{ folder }}&page={{ page-1 }}" class="btn btn-sm">← 上一页</a>{% endif %}
-        <span>第 {{ page }} / {{ total_pages }} 页 (共 {{ total }} 封)</span>
-        {% if page < total_pages %}<a href="?folder={{ folder }}&page={{ page+1 }}" class="btn btn-sm">下一页 →</a>{% endif %}
+    <div class="pagination" style="margin-top: 16px;">
+        <span id="page-info">已加载 {{ emails|length }} / {{ total }} 封</span>
+        {% if total_pages > page %}
+        <button id="load-more-btn" class="btn btn-sm">加载更多 ↓</button>
+        {% endif %}
     </div>
-    {% endif %}
 </div>
+
+<script>
+(function() {
+    const accountId = {{ account['id'] }};
+    const folder = {{ folder | tojson }};
+    let curPage = {{ page }};
+    let loaded = {{ emails|length }};
+    const total = {{ total }};
+    const btn = document.getElementById('load-more-btn');
+    if (!btn) return;
+
+    btn.addEventListener('click', async function() {
+        btn.disabled = true;
+        btn.textContent = '加载中...';
+        try {
+            const r = await fetch(`/api/account/${accountId}/emails?folder=${encodeURIComponent(folder)}&page=${curPage + 1}`);
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            const tbody = document.getElementById('mail-tbody');
+            const emptyRow = document.getElementById('empty-row');
+            if (emptyRow) emptyRow.remove();
+            for (const em of d.emails) {
+                const tr = document.createElement('tr');
+                const tdFrom = document.createElement('td');
+                tdFrom.textContent = (em.from || '').slice(0, 50);
+                const tdSubj = document.createElement('td');
+                const a = document.createElement('a');
+                a.href = '/email/' + em.id;
+                a.textContent = (em.subject || '').slice(0, 80) || '(无主题)';
+                tdSubj.appendChild(a);
+                const tdDate = document.createElement('td');
+                tdDate.textContent = em.date || '-';
+                const tdFolder = document.createElement('td');
+                const badge = document.createElement('span');
+                badge.className = 'badge';
+                badge.textContent = em.folder;
+                tdFolder.appendChild(badge);
+                tr.append(tdFrom, tdSubj, tdDate, tdFolder);
+                tbody.appendChild(tr);
+            }
+            curPage = d.page;
+            loaded += d.emails.length;
+            document.getElementById('page-info').textContent = `已加载 ${loaded} / ${d.total} 封`;
+            if (curPage >= d.total_pages) {
+                btn.remove();
+                return;
+            }
+        } catch (e) {
+            alert('加载失败: ' + e.message);
+        }
+        btn.disabled = false;
+        btn.textContent = '加载更多 ↓';
+    });
+})();
+</script>
 {% endblock %}

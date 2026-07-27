@@ -23,24 +23,22 @@
         {% block content %}{% endblock %}
     </main>
     <script>
-        async function fetchAccount(id) {
-            const btn = event.target;
+        async function fetchAccount(id, btn) {
             btn.disabled = true; btn.textContent = '取件中...';
             try {
                 const r = await fetch(`/fetch/${id}`, {method:'POST'});
                 const d = await r.json();
-                if(d.ok) { btn.textContent = `✓ ${d.fetched}封`; btn.style.color='#4caf50'; }
-                else { btn.textContent = '✗ 失败'; btn.style.color='#f44336'; }
+                if(d.ok) { btn.textContent = `✓ 新增${d.fetched}封`; btn.style.color='#4caf50'; }
+                else { btn.textContent = '✗ 失败'; btn.style.color='#f44336'; btn.title = d.error || ''; }
             } catch(e) { btn.textContent = '✗ 错误'; btn.style.color='#f44336'; }
             setTimeout(() => location.reload(), 1500);
         }
-        async function fetchAll() {
-            const btn = document.getElementById('fetch-all-btn');
+        async function fetchAll(btn) {
             btn.disabled = true; btn.textContent = '批量取件中...';
             try {
                 const r = await fetch('/fetch-all', {method:'POST'});
                 const d = await r.json();
-                alert(`成功: ${d.success}, 失败: ${d.failed}, 邮件: ${d.total_emails}`);
+                alert(`成功: ${d.success}, 失败: ${d.failed}, 新增邮件: ${d.total_emails}`);
             } catch(e) { alert('Error: ' + e); }
             location.reload();
         }
