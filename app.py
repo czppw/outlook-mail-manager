@@ -189,15 +189,46 @@ def _is_api_path(path: str) -> bool:
     }
 
 
+def _canonical_origin(value: str) -> tuple[str, str, int] | None:
+    try:
+        parsed = urlsplit(value.strip())
+        port = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    default_port = 443 if parsed.scheme == "https" else 80
+    return parsed.scheme, parsed.hostname.lower().rstrip("."), port or default_port
+
+
+def _configured_origins() -> set[tuple[str, str, int]]:
+    configured = os.environ.get("OMM_ALLOWED_ORIGINS", "")
+    return {
+        canonical
+        for raw in configured.split(",")
+        if raw.strip() and (canonical := _canonical_origin(raw)) is not None
+    }
+
+
 def _origin_allowed(request: Request) -> bool:
     origin = request.headers.get("origin")
     if not origin:
         return True
-    parsed = urlsplit(origin)
-    return (
-        parsed.scheme in {"http", "https"}
-        and parsed.netloc.lower() == request.headers.get("host", "").lower()
-    )
+    canonical = _canonical_origin(origin)
+    if canonical is None:
+        return False
+
+    host = request.headers.get("host", "").strip()
+    same_origin = _canonical_origin(f"{canonical[0]}://{host}")
+    return canonical == same_origin or canonical in _configured_origins()
 
 
 @app.middleware("http")

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from email_sanitizer import sanitize_email_html
 
@@ -44,6 +45,48 @@ def _csrf(client: TestClient) -> str:
     match = CSRF_PATTERN.search(response.text)
     assert match
     return match.group(1)
+
+
+def _request_with_origin(host: str, origin: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/login",
+            "headers": [
+                (b"host", host.encode("ascii")),
+                (b"origin", origin.encode("ascii")),
+            ],
+        }
+    )
+
+
+def test_origin_validation_supports_explicit_public_origin(web_app, monkeypatch):
+    direct = _request_with_origin(
+        "101.34.216.204:8899", "http://101.34.216.204:8899"
+    )
+    proxied = _request_with_origin("127.0.0.1:8899", "http://101.34.216.204")
+    malicious = _request_with_origin("127.0.0.1:8899", "http://attacker.test")
+
+    assert web_app._origin_allowed(direct) is True
+    assert web_app._origin_allowed(proxied) is False
+
+    monkeypatch.setenv("OMM_ALLOWED_ORIGINS", "http://101.34.216.204")
+    assert web_app._origin_allowed(proxied) is True
+    assert web_app._origin_allowed(malicious) is False
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "file:///tmp/page.html",
+        "http://101.34.216.204/path",
+        "http://user@101.34.216.204",
+        "http://101.34.216.204:invalid",
+    ],
+)
+def test_origin_validation_rejects_malformed_values(web_app, origin):
+    assert web_app._origin_allowed(_request_with_origin("127.0.0.1:8899", origin)) is False
 
 
 def test_request_limit_security_headers_and_secure_cookie(web_app):
