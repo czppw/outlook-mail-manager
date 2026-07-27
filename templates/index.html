@@ -21,13 +21,39 @@
         <h2>账号列表 ({{ total }})</h2>
         <div style="display: flex; gap: 8px;">
             <a href="/import" class="btn btn-sm">+ 导入账号</a>
-            <a href="/export" class="btn btn-sm" title="按导入格式导出全部账号">📤 导出</a>
+            <button class="btn btn-sm" onclick="exportSelected()">📤 导出选中</button>
             <a href="/tokens" class="btn btn-sm">⏰ 令牌管理</a>
         </div>
     </div>
+
+    <form method="get" action="/" class="filter-bar" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center;">
+        <select name="provider" class="btn btn-sm" onchange="this.form.submit()">
+            <option value="">全部供应商</option>
+            <option value="microsoft" {{ 'selected' if provider == 'microsoft' }}>Microsoft</option>
+            <option value="google" {{ 'selected' if provider == 'google' }}>Gmail</option>
+        </select>
+        <select name="status" class="btn btn-sm" onchange="this.form.submit()">
+            <option value="">全部状态</option>
+            <option value="active" {{ 'selected' if status == 'active' }}>✅ 正常</option>
+            <option value="error" {{ 'selected' if status == 'error' }}>❌ 异常</option>
+            <option value="pending" {{ 'selected' if status == 'pending' }}>⏳ 待取件</option>
+            <option value="disabled" {{ 'selected' if status == 'disabled' }}>🚫 已禁用</option>
+        </select>
+        <select name="fetch_mode" class="btn btn-sm" onchange="this.form.submit()">
+            <option value="">全部取件方式</option>
+            <option value="graph" {{ 'selected' if fetch_mode == 'graph' }}>Graph</option>
+            <option value="imap" {{ 'selected' if fetch_mode == 'imap' }}>IMAP</option>
+        </select>
+        <input type="text" name="q" value="{{ q }}" placeholder="搜索邮箱关键词..."
+               style="width: 200px; padding: 6px 10px; font-size: 13px;">
+        <button type="submit" class="btn btn-sm btn-primary">筛选</button>
+        {% if qs %}<a href="/" class="btn btn-sm">重置</a>{% endif %}
+    </form>
+
     <table>
         <thead>
             <tr>
+                <th style="width: 30px;"><input type="checkbox" id="check-all" onclick="toggleAll(this)" title="全选本页"></th>
                 <th>#</th>
                 <th>邮箱</th>
                 <th>供应商</th>
@@ -43,6 +69,7 @@
         <tbody>
         {% for acc in accounts %}
             <tr class="{{ 'row-error' if acc['status'] == 'error' else '' }} {{ 'row-disabled' if not acc['enabled'] else '' }}">
+                <td><input type="checkbox" class="acc-check" value="{{ acc['id'] }}"></td>
                 <td>{{ acc['id'] }}</td>
                 <td><a href="/account/{{ acc['id'] }}">{{ acc['email'] }}</a></td>
                 <td>
@@ -106,10 +133,34 @@
 
     {% if total_pages > 1 %}
     <div class="pagination">
-        {% if page > 1 %}<a href="?page={{ page-1 }}" class="btn btn-sm">← 上一页</a>{% endif %}
+        {% if page > 1 %}<a href="?page={{ page-1 }}{{ '&' + qs if qs }}" class="btn btn-sm">← 上一页</a>{% endif %}
         <span>第 {{ page }} / {{ total_pages }} 页</span>
-        {% if page < total_pages %}<a href="?page={{ page+1 }}" class="btn btn-sm">下一页 →</a>{% endif %}
+        {% if page < total_pages %}<a href="?page={{ page+1 }}{{ '&' + qs if qs }}" class="btn btn-sm">下一页 →</a>{% endif %}
     </div>
     {% endif %}
 </div>
+
+<script>
+function toggleAll(src) {
+    document.querySelectorAll('.acc-check').forEach(c => c.checked = src.checked);
+}
+function exportSelected() {
+    const ids = [...document.querySelectorAll('.acc-check:checked')].map(c => c.value);
+    if (!ids.length) { alert('请先勾选要导出的账号'); return; }
+    // 动态表单 POST 导出（浏览器直接下载文件）
+    const form = document.createElement('form');
+    form.method = 'post';
+    form.action = '/export';
+    form.style.display = 'none';
+    for (const id of ids) {
+        const i = document.createElement('input');
+        i.name = 'account_id';
+        i.value = id;
+        form.appendChild(i);
+    }
+    document.body.appendChild(form);
+    form.submit();
+    form.remove();
+}
+</script>
 {% endblock %}

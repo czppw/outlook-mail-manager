@@ -248,17 +248,28 @@ def _with_token_days(accounts: list[dict]) -> list[dict]:
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index(request: Request, page: int = 1):
+async def index(request: Request, page: int = 1, provider: str = "", status: str = "",
+                fetch_mode: str = "", q: str = ""):
     _require_auth(request)
-    accounts, total = await db.get_accounts(page=page, per_page=50)
+    accounts, total = await db.get_accounts(
+        page=page, per_page=50,
+        provider=provider or None, status=status or None,
+        fetch_mode=fetch_mode or None, keyword=q.strip() or None,
+    )
     _with_token_days(accounts)
     stats = await db.get_stats()
     expiring = await db.get_expiring_accounts()
     total_pages = max(1, (total + 49) // 50)
+    from urllib.parse import urlencode
+    qs = urlencode({k: v for k, v in
+                    {"provider": provider, "status": status,
+                     "fetch_mode": fetch_mode, "q": q}.items() if v})
     return templates.TemplateResponse(request, "index.html", {
         "accounts": accounts, "stats": stats,
         "expiring": expiring,
         "warning_days": db.TOKEN_WARNING_DAYS,
+        "provider": provider, "status": status,
+        "fetch_mode": fetch_mode, "q": q, "qs": qs,
         "page": page, "total_pages": total_pages, "total": total
     })
 
@@ -509,12 +520,8 @@ async def bulk_fetch_mode(request: Request, fetch_mode: str = Form(...)):
     })
 
 
-@app.get("/export")
-async def export_accounts(request: Request):
-    """导出全部账号为导入格式文本（email----密码----client_id----refresh_token）。
-    Gmail 账号第二个字段导出 client_secret，与导入格式一致，可直接用于再导入。"""
-    _require_auth(request)
-    accounts, _ = await db.get_accounts(page=1, per_page=1_000_000)
+def _export_response(accounts: list[dict]) -> Response:
+    """按导入格式生成导出文件。Gmail 账号第二个字段导出 client_secret，可直接再导入。"""
     lines = []
     for a in accounts:
         second = a.get("client_secret") or a.get("password") or ""
@@ -527,6 +534,29 @@ async def export_accounts(request: Request):
         media_type="text/plain; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="accounts_export.txt"'},
     )
+
+
+@app.get("/export")
+async def export_accounts(request: Request, provider: str = "", status: str = "",
+                          fetch_mode: str = "", q: str = ""):
+    """导出账号（不带参数=全部；带筛选参数=当前筛选结果）。"""
+    _require_auth(request)
+    accounts, _ = await db.get_accounts(
+        page=1, per_page=1_000_000,
+        provider=provider or None, status=status or None,
+        fetch_mode=fetch_mode or None, keyword=q.strip() or None,
+    )
+    return _export_response(accounts)
+
+
+@app.post("/export")
+async def export_selected(request: Request, account_id: list[int] = Form([])):
+    """导出勾选的账号。"""
+    _require_auth(request)
+    if not account_id:
+        return JSONResponse({"error": "未选择任何账号"}, status_code=400)
+    accounts = await db.get_accounts_by_ids(account_id)
+    return _export_response(accounts)
 
 
 # ─────────── JSON API ───────────

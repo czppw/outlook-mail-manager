@@ -248,17 +248,53 @@ async def add_account(email: str, password: str, client_id: str, refresh_token: 
         return "added"
 
 
-async def get_accounts(page: int = 1, per_page: int = 50):
+async def get_accounts(page: int = 1, per_page: int = 50,
+                       provider: str = None, status: str = None,
+                       fetch_mode: str = None, keyword: str = None):
+    """分页查询账号，支持供应商/状态/取件方式/邮箱关键词筛选。
+    status='disabled' 特指已禁用（enabled=0），其余匹配 status 列。"""
+    where, params = [], []
+    if provider:
+        where.append("provider = ?")
+        params.append(provider)
+    if fetch_mode:
+        where.append("fetch_mode = ?")
+        params.append(fetch_mode)
+    if status == "disabled":
+        where.append("enabled = 0")
+    elif status:
+        where.append("status = ?")
+        params.append(status)
+    if keyword:
+        where.append("email LIKE ?")
+        params.append(f"%{keyword}%")
+    w = (" WHERE " + " AND ".join(where)) if where else ""
+
     async with aiosqlite.connect(DB_PATH) as db_conn:
         db_conn.row_factory = aiosqlite.Row
         offset = (page - 1) * per_page
         cursor = await db_conn.execute(
-            "SELECT * FROM accounts ORDER BY id LIMIT ? OFFSET ?", (per_page, offset)
+            f"SELECT * FROM accounts{w} ORDER BY id LIMIT ? OFFSET ?",
+            (*params, per_page, offset)
         )
         rows = await cursor.fetchall()
-        cursor2 = await db_conn.execute("SELECT COUNT(*) FROM accounts")
+        cursor2 = await db_conn.execute(f"SELECT COUNT(*) FROM accounts{w}", params)
         total = (await cursor2.fetchone())[0]
         return [dict(row) for row in rows], total
+
+
+async def get_accounts_by_ids(account_ids: list[int]) -> list[dict]:
+    if not account_ids:
+        return []
+    placeholders = ",".join("?" * len(account_ids))
+    async with aiosqlite.connect(DB_PATH) as db_conn:
+        db_conn.row_factory = aiosqlite.Row
+        cursor = await db_conn.execute(
+            f"SELECT * FROM accounts WHERE id IN ({placeholders}) ORDER BY id",
+            account_ids
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
 
 async def get_all_active_accounts():

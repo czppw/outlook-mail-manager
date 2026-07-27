@@ -275,6 +275,23 @@ def test_http(tmpdir):
         # 批量切换全部 MS 账号
         r = s.post(BASE + "/accounts/bulk-fetch-mode", data={"fetch_mode": "imap"})
         check("批量切换全部MS账号", "已将 1 个 Microsoft 账号全部切换为 IMAP 模式" in r.text)
+
+        # 列表筛选
+        r = s.get(BASE + "/?provider=google")
+        check("按供应商筛选", "t2@gmail.com" in r.text and "t1@outlook.com" not in r.text)
+        r = s.get(BASE + "/?provider=microsoft")
+        check("筛选-仅Microsoft", "t1@outlook.com" in r.text and "t2@gmail.com" not in r.text)
+        r = s.get(BASE + "/?q=gmail")
+        check("邮箱关键词搜索", "t2@gmail.com" in r.text and "t1@outlook.com" not in r.text)
+        r = s.get(BASE + "/?status=disabled")
+        check("按状态筛选(无禁用账号)", "t1@outlook.com" not in r.text and "t2@gmail.com" not in r.text)
+
+        # 勾选导出
+        r = s.post(BASE + "/export", data={"account_id": ["1"]})
+        check("导出选中仅含勾选账号",
+              r.status_code == 200 and "t1@outlook.com" in r.text and "t2@gmail.com" not in r.text)
+        r = s.post(BASE + "/export", data=[("account_id", "1"), ("account_id", "2")])
+        check("导出选中多个账号", "t1@outlook.com" in r.text and "t2@gmail.com" in r.text)
     finally:
         proc.terminate()
         proc.wait(timeout=10)
