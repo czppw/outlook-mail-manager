@@ -39,12 +39,73 @@ LOGIN_MAX_FAILS = 5
 LOGIN_LOCK_SECONDS = 300
 _login_fails: dict[str, list] = {}
 
+# 自动健康检测间隔（小时），0=关闭；环境变量为默认值，设置页可改（存 settings 表）
+AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "6"))
+
+
+def classify_error(err: str | None) -> str:
+    """把原始错误信息归类为简短中文原因，便于快速判断账号是真死还是误报。"""
+    if not err:
+        return ""
+    e = err.lower()
+    if "invalid_grant" in e:
+        return "令牌失效"
+    if "invalid_scope" in e:
+        return "权限范围不符"
+    if "mailbox" in e and ("notfound" in e or "not found" in e):
+        return "邮箱不存在"
+    if "unauthorized" in e or "401" in e:
+        return "认证失败"
+    if "forbidden" in e or "403" in e:
+        return "无访问权限"
+    if "xoauth2" in e:
+        return "IMAP认证失败"
+    if "timeout" in e or "timed out" in e:
+        return "连接超时"
+    if "network" in e or "connection" in e or "unreachable" in e or "resolve" in e:
+        return "网络错误"
+    return "取件失败"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await db.init_db()
     logger.info("Database initialized")
+    checker = asyncio.create_task(_auto_check_loop())
     yield
+    checker.cancel()
+
+
+async def _auto_check_hours() -> float:
+    """自动检测间隔：设置页（settings 表）优先，其次环境变量默认。"""
+    v = await db.get_setting("auto_check_hours")
+    if v is not None:
+        try:
+            return float(v)
+        except ValueError:
+            pass
+    return AUTO_CHECK_DEFAULT_HOURS
+
+
+async def _auto_check_loop():
+    """后台定期健康检测：小批量取件验证账号可用性，失败自动标记 error。
+    启动后先等 10 分钟再跑第一轮，避免重启后立即打满。"""
+    await asyncio.sleep(600)
+    while True:
+        try:
+            hours = await _auto_check_hours()
+            if hours > 0:
+                logger.info("Auto health check started")
+                results = await _fetch_all_accounts(limit=5)
+                logger.info(f"Auto health check done: {results}")
+                await asyncio.sleep(hours * 3600)
+            else:
+                await asyncio.sleep(3600)  # 关闭状态下每小时重读一次配置
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Auto health check error: {e}")
+            await asyncio.sleep(3600)
 
 app = FastAPI(title="OAuth2 Mail Manager", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
@@ -234,7 +295,7 @@ async def _default_ms_fetch_mode() -> str:
 # ─────────── Pages ───────────
 
 def _with_token_days(accounts: list[dict]) -> list[dict]:
-    """为账号列表计算令牌剩余天数（None 表示未知）。"""
+    """为账号列表计算令牌剩余天数（None 表示未知）与错误分类。"""
     now = datetime.now()
     for acc in accounts:
         acc["days_left"] = None
@@ -244,6 +305,7 @@ def _with_token_days(accounts: list[dict]) -> list[dict]:
                 acc["days_left"] = (created + timedelta(days=db.TOKEN_LIFETIME_DAYS) - now).days
             except ValueError:
                 pass
+        acc["error_kind"] = classify_error(acc.get("error"))
     return accounts
 
 
@@ -391,21 +453,16 @@ async def fetch_single(request: Request, account_id: int):
         return JSONResponse({"ok": False, "error": str(e)[:500]})
 
 
-@app.post("/fetch-all")
-async def fetch_all(request: Request):
-    """Fetch emails for all active accounts."""
-    _require_auth(request)
+async def _fetch_all_accounts(limit: int) -> dict:
+    """对全部启用账号取件（手动批量/定时健康检测共用）。"""
     accounts = await db.get_all_active_accounts()
-    if not accounts:
-        return JSONResponse({"error": "No active accounts"}, status_code=400)
-
     sem = asyncio.Semaphore(FETCH_CONCURRENCY)
     results = {"success": 0, "failed": 0, "total_emails": 0}
 
     async def fetch_one(acc):
         async with sem:
             try:
-                total_saved, _ = await _fetch_and_save(acc, limit=30)
+                total_saved, _ = await _fetch_and_save(acc, limit=limit)
                 results["success"] += 1
                 results["total_emails"] += total_saved
             except Exception as e:
@@ -413,7 +470,17 @@ async def fetch_all(request: Request):
                 results["failed"] += 1
 
     await asyncio.gather(*[fetch_one(a) for a in accounts])
-    return JSONResponse(results)
+    return results
+
+
+@app.post("/fetch-all")
+async def fetch_all(request: Request):
+    """Fetch emails for all active accounts."""
+    _require_auth(request)
+    accounts = await db.get_all_active_accounts()
+    if not accounts:
+        return JSONResponse({"error": "No active accounts"}, status_code=400)
+    return JSONResponse(await _fetch_all_accounts(limit=30))
 
 
 @app.post("/account/{account_id}/toggle")
@@ -485,21 +552,29 @@ async def settings_page(request: Request):
         "global_proxy": await _global_proxy(),
         "proxy_from_env": not bool(await db.get_setting("global_proxy")) and bool(os.environ.get("OMM_PROXY")),
         "default_ms_fetch_mode": await _default_ms_fetch_mode(),
+        "auto_check_hours": await _auto_check_hours(),
     })
 
 
 @app.post("/settings")
 async def save_settings(request: Request, global_proxy: str = Form(""),
-                        default_ms_fetch_mode: str = Form("graph")):
+                        default_ms_fetch_mode: str = Form("graph"),
+                        auto_check_hours: str = Form("6")):
     _require_auth(request)
     if default_ms_fetch_mode not in ("graph", "imap"):
         default_ms_fetch_mode = "graph"
+    try:
+        hours = max(0.0, float(auto_check_hours))
+    except ValueError:
+        hours = AUTO_CHECK_DEFAULT_HOURS
     await db.set_setting("global_proxy", global_proxy.strip())
     await db.set_setting("default_ms_fetch_mode", default_ms_fetch_mode)
+    await db.set_setting("auto_check_hours", str(hours))
     return templates.TemplateResponse(request, "settings.html", {
         "global_proxy": global_proxy.strip(),
         "proxy_from_env": False,
         "default_ms_fetch_mode": default_ms_fetch_mode,
+        "auto_check_hours": hours,
         "success": "设置已保存，立即生效",
     })
 

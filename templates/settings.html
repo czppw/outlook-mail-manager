@@ -35,6 +35,16 @@
             <p class="hint">只影响之后新导入的账号。</p>
         </div>
 
+        <h3 style="margin: 20px 0 12px;">🩺 自动健康检测</h3>
+        <div class="form-group">
+            <label>每隔多少小时自动检测一次全部账号（0 = 关闭）</label>
+            <input type="text" name="auto_check_hours" value="{{ auto_check_hours }}" style="width: 120px;">
+            <p class="hint" style="margin-top: 4px;">
+                检测 = 小批量取件验证（每账号 5 封）。失败的账号自动标记为「异常」，
+                在账号列表按状态筛选「异常」即可看到。令牌失效 / 邮箱被封 / 网络故障都能及时发现。
+            </p>
+        </div>
+
         <button type="submit" class="btn btn-primary">保存设置</button>
     </form>
 </div>

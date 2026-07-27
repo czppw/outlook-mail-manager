@@ -95,6 +95,17 @@ def test_fmt_dt():
     check("无法解析原样截断", fmt_dt("some random string") == "some random string")
 
 
+def test_classify_error():
+    print("\n== Part 1d: 错误分类 ==")
+    from app import classify_error
+    check("令牌失效", classify_error('Token refresh failed (400): {"error":"invalid_grant"}') == "令牌失效")
+    check("权限范围", classify_error("invalid_scope AADSTS70011") == "权限范围不符")
+    check("连接超时", classify_error("Token refresh network error: timed out") == "连接超时")
+    check("网络错误", classify_error("Connection refused") == "网络错误")
+    check("IMAP认证", classify_error("XOAUTH2 auth failed: NO") == "IMAP认证失败")
+    check("无错误返回空", classify_error(None) == "" and classify_error("") == "")
+
+
 # ─────────── Part 2: DB 层 ───────────
 
 def test_db_layer(tmpdir):
@@ -255,11 +266,14 @@ def test_http(tmpdir):
         r = s.get(BASE + "/settings")
         check("设置页可访问", r.status_code == 200 and "全局设置" in r.text)
         r = s.post(BASE + "/settings", data={"global_proxy": "socks5://127.0.0.1:1080",
-                                             "default_ms_fetch_mode": "imap"})
+                                             "default_ms_fetch_mode": "imap",
+                                             "auto_check_hours": "12"})
         check("设置保存成功", "设置已保存" in r.text)
         r = s.get(BASE + "/settings")
         check("设置已持久化", "socks5://127.0.0.1:1080" in r.text)
-        s.post(BASE + "/settings", data={"global_proxy": "", "default_ms_fetch_mode": "graph"})
+        check("自动检测间隔已保存", 'value="12.0"' in r.text or 'value="12"' in r.text)
+        s.post(BASE + "/settings", data={"global_proxy": "", "default_ms_fetch_mode": "graph",
+                                         "auto_check_hours": "0"})
 
         # 导出账号
         r = s.get(BASE + "/export")
@@ -322,6 +336,7 @@ def main():
     print(f"测试目录: {tmpdir}")
     test_graph_mapping()
     test_fmt_dt()
+    test_classify_error()
     test_db_layer(tmpdir)
     test_legacy_schema(tmpdir)
     test_http(tmpdir)

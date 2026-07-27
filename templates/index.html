@@ -11,7 +11,7 @@
 <div class="stats-bar">
     <div class="stat">📊 总账号: <strong>{{ stats.total }}</strong></div>
     <div class="stat active">✅ 活跃: <strong>{{ stats.ok }}</strong></div>
-    <div class="stat error">❌ 异常: <strong>{{ stats.error }}</strong></div>
+    <a href="/?status=error" class="stat error" title="点击筛选异常账号">❌ 异常: <strong>{{ stats.error }}</strong></a>
     <div class="stat">📬 邮件总数: <strong>{{ stats.total_emails }}</strong></div>
     <button id="fetch-all-btn" class="btn btn-primary" onclick="fetchAll(this)">🔄 全部取件</button>
 </div>
@@ -107,7 +107,10 @@
                 </td>
                 <td><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
                 <td>{{ acc['last_check'] | fmt_dt }}</td>
-                <td class="error-text" title="{{ acc['error'] or '' }}">{{ (acc['error'] or '-')[:40] }}</td>
+                <td class="error-text" title="{{ acc['error'] or '' }}">
+                    {% if acc['error_kind'] %}<span class="badge badge-error">{{ acc['error_kind'] }}</span>{% endif %}
+                    {{ (acc['error'] or '-')[:30] }}
+                </td>
                 <td class="actions">
                     <button class="btn btn-sm" onclick="fetchAccount({{ acc['id'] }}, this)">取件</button>
                     <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="更新 refresh_token">令牌</a>
