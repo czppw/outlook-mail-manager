@@ -71,11 +71,11 @@
                     {% if acc['days_left'] is none %}
                         <span class="badge badge-warn">未知</span>
                     {% elif acc['days_left'] <= 0 %}
-                        <span class="badge badge-error" title="创建于 {{ acc['token_created_at'] }}">已过期 {{ -acc['days_left'] }}天</span>
+                        <span class="badge badge-error" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">已过期 {{ -acc['days_left'] }}天</span>
                     {% elif acc['days_left'] <= warning_days %}
-                        <span class="badge badge-warn" title="创建于 {{ acc['token_created_at'] }}">{{ acc['days_left'] }}天后过期</span>
+                        <span class="badge badge-warn" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">{{ acc['days_left'] }}天后过期</span>
                     {% else %}
-                        <span class="badge badge-ok" title="创建于 {{ acc['token_created_at'] }}">正常</span>
+                        <span class="badge badge-ok" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">正常</span>
                     {% endif %}
                 </td>
                 <td><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
