@@ -96,7 +96,7 @@ async def _auto_check_loop():
             hours = await _auto_check_hours()
             if hours > 0:
                 logger.info("Auto health check started")
-                results = await _fetch_all_accounts(limit=5)
+                results = await _fetch_all_accounts(limit=1)
                 logger.info(f"Auto health check done: {results}")
                 await asyncio.sleep(hours * 3600)
             else:
@@ -481,6 +481,17 @@ async def fetch_all(request: Request):
     if not accounts:
         return JSONResponse({"error": "No active accounts"}, status_code=400)
     return JSONResponse(await _fetch_all_accounts(limit=30))
+
+
+@app.post("/check-all")
+async def check_all(request: Request):
+    """一键健康检测：每账号仅取 1 封验证可用性（轻量，几乎无流量）。
+    失败账号自动标记异常，可用 /?status=error 筛选查看。"""
+    _require_auth(request)
+    accounts = await db.get_all_active_accounts()
+    if not accounts:
+        return JSONResponse({"error": "No active accounts"}, status_code=400)
+    return JSONResponse(await _fetch_all_accounts(limit=1))
 
 
 @app.post("/account/{account_id}/toggle")

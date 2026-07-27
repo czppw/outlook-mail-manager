@@ -48,6 +48,16 @@
             } catch(e) { alert('批量取件出错：' + e); }
             location.reload();
         }
+        async function checkAll(btn) {
+            btn.disabled = true; btn.textContent = '检测中...';
+            try {
+                const r = await fetch('/check-all', {method:'POST'});
+                const d = await r.json();
+                alert(`健康检测完成\n✅ 可用: ${d.success} 个, ❌ 异常: ${d.failed} 个` +
+                      (d.failed > 0 ? '\n点击统计栏「异常」数字查看失败原因' : ''));
+            } catch(e) { alert('检测出错：' + e); }
+            location.reload();
+        }
         async function setFetchMode(id, mode, sel) {
             try {
                 const fd = new FormData();

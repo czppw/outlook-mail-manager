@@ -306,6 +306,17 @@ def test_http(tmpdir):
               r.status_code == 200 and "t1@outlook.com" in r.text and "t2@gmail.com" not in r.text)
         r = s.post(BASE + "/export", data=[("account_id", "1"), ("account_id", "2")])
         check("导出选中多个账号", "t1@outlook.com" in r.text and "t2@gmail.com" in r.text)
+
+        # 一键检测（假 token 必失败 → failed=2，验证失败计数与异常标记链路）
+        r = requests.post(BASE + "/check-all", allow_redirects=False)
+        check("一键检测未认证跳转", r.status_code == 302)
+        r = s.post(BASE + "/check-all", timeout=120)
+        d = r.json()
+        check("一键检测返回结构", all(k in d for k in ("success", "failed", "total_emails")))
+        check("一键检测假账号全部标记失败", d.get("failed") == 2 and d.get("success") == 0, str(d))
+        r = s.get(BASE + "/?status=error")
+        check("检测后异常筛选可见",
+              "t1@outlook.com" in r.text and any(k in r.text for k in ("令牌失效", "网络错误", "取件失败", "连接超时")))
     finally:
         proc.terminate()
         proc.wait(timeout=10)

@@ -13,6 +13,7 @@
     <div class="stat active">✅ 活跃: <strong>{{ stats.ok }}</strong></div>
     <a href="/?status=error" class="stat error" title="点击筛选异常账号">❌ 异常: <strong>{{ stats.error }}</strong></a>
     <div class="stat">📬 邮件总数: <strong>{{ stats.total_emails }}</strong></div>
+    <button id="check-all-btn" class="btn" onclick="checkAll(this)" title="每账号仅取1封验证可用性，几乎无流量">🩺 一键检测</button>
     <button id="fetch-all-btn" class="btn btn-primary" onclick="fetchAll(this)">🔄 全部取件</button>
 </div>
 
