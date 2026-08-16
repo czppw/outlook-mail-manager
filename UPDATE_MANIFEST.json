@@ -2,7 +2,7 @@
   "delete": [],
   "files": {
     "VERSION": {
-      "sha256": "9f77034b1eb57d24f21ac7deb65c9cc99f63b72775e311f1f280ab2b6c2e06a2",
+      "sha256": "206620a657f1ccc8af72b866fdcef20e641c48f39ce27f338ce8313949c63e53",
       "size": 5
     },
     "app.py": {
@@ -50,12 +50,12 @@
       "size": 10678
     },
     "static/style.css": {
-      "sha256": "8ea0f4c14e7405eb6550f4517e47e29e9e3742a815f4cb2a5566936ce716b147",
-      "size": 21408
+      "sha256": "537eb0633a1f0391fe4aab0ac5339cde3af5fcec756c6d3f0036c31f85d529c1",
+      "size": 22505
     },
     "templates/base.html": {
-      "sha256": "aae17e5edc72af1e64a340453e08c121ceec80d5856af350a6e1b5bfaa6ce7f5",
-      "size": 4226
+      "sha256": "6ce2692a38fadccc0e7a1a289f81c4eff7ee45e52003306971413c916d2fbd4e",
+      "size": 4429
     },
     "templates/edit_token.html": {
       "sha256": "ac90142da8b7e6f3588e2f7d3dc62baefbb424667eb1f18945ec2ddac83b4f39",
@@ -78,8 +78,8 @@
       "size": 10470
     },
     "templates/login.html": {
-      "sha256": "905f97a47c7038e2804626c7c2771a88a8ab87d3ec6f6e5527bc92db6b460fd9",
-      "size": 1735
+      "sha256": "acbc108d3aa81786a8af55e47fce530eb51bafae3860e4d1c4b9b58b0522d033",
+      "size": 1759
     },
     "templates/password.html": {
       "sha256": "3c8d79902ad4f47195f40762ab99ed8fdbd7f63897738a11d7d2fc87a770d415",
@@ -102,10 +102,10 @@
       "size": 5140
     }
   },
-  "release_version": "1.2.0",
+  "release_version": "1.2.1",
   "schema_version": 1,
   "signature": {
     "algorithm": "ed25519",
-    "value": "TFSxVhAqhF19kVDA3efdemgZ9vhPKtDUimlHoq3p1gpnutZWwsF16S8T+t9iRwvX6F8fb3MRTinYUZa8gvQqBQ=="
+    "value": "PtgRHMD30WZLAdlrjxdXn3GpKCLRmbQXv90yJIStbsIjoOm+Ygx6aQNMj62X1h33QMyyrf/PP82CSHpxflorCQ=="
   }
 }
