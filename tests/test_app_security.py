@@ -5,11 +5,15 @@ import importlib
 import re
 from contextlib import contextmanager
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.requests import Request
 
 from email_sanitizer import sanitize_email_html
+
+_version_from_file = (Path(__file__).resolve().parent.parent / "VERSION").read_text(encoding="ascii").strip()
 
 CSRF_PATTERN = re.compile(r'<meta name="csrf-token" content="([^"]+)">')
 INITIAL_PASSWORD = "WebSecurityPass!123"
@@ -276,7 +280,7 @@ def test_health_check_identifies_version(web_app):
     with TestClient(web_app.app, base_url="https://testserver") as client:
         response = client.get("/healthz")
         assert response.status_code == 200
-        assert response.json() == {"ok": True, "version": "1.0.0"}
+        assert response.json() == {"ok": True, "version": _version_from_file}
 
 
 def test_lifespan_holds_instance_lock_and_recovers_updates(web_app, monkeypatch):

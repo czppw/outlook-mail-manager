@@ -2,20 +2,20 @@
   "delete": [],
   "files": {
     "VERSION": {
-      "sha256": "59854984853104df5c353e2f681a15fc7924742f9a2e468c29af248dce45ce03",
-      "size": 6
+      "sha256": "7fbd210ebec11f65a97190ef900795c4b8da3805af3f5a1b8d1d272556b292ca",
+      "size": 5
     },
     "app.py": {
-      "sha256": "92a2fa8013253991f1523a0d8eef11daf3bd4aef10bce5f59cd6510377c6bc5a",
-      "size": 33613
+      "sha256": "1e57a8cdd1a4b43b7b829f194fa5c246de9f640866a8101cb8f49ced26186763",
+      "size": 36766
     },
     "build_update_manifest.py": {
       "sha256": "fdfb1e3b0775d60b55829c21822e66cde1454b825617bf99f15640bcb5858572",
       "size": 7469
     },
     "db.py": {
-      "sha256": "685bf1f0c2327f7318d9cef5789c1cfa5cadb5fec6c3ad1140ddfc4b86898aef",
-      "size": 48013
+      "sha256": "5b6bbe7b09817717ca339f95dc36eb2229b4dace503744b56c3fff97d4b19fb2",
+      "size": 47961
     },
     "email_sanitizer.py": {
       "sha256": "f98263f476e24b9ee49d4ea068d3fc71a87dba3dc34f92e4ecdce0f921a966bb",
@@ -26,8 +26,8 @@
       "size": 2584
     },
     "mail_fetcher.py": {
-      "sha256": "33df2fd23d0c7a565140b63fa0f13981663352528287629ef4809d5d4e8a8686",
-      "size": 28700
+      "sha256": "8ee4a46935640751429d4e00f336b677ccc602196e4ff87538cefad426b5398b",
+      "size": 28549
     },
     "requirements.lock": {
       "sha256": "b7d8042604898e4ac61a8f687192ef708b02cbbfdc58f4ec661debc3dcbf583b",
@@ -42,8 +42,8 @@
       "size": 4103
     },
     "smoke_test.py": {
-      "sha256": "fdd0c8536ce108a6563b4869bfb62b0d6ed356b8335d9f98ade06566f116b4cf",
-      "size": 20389
+      "sha256": "27496e6bb6348f873d199cc15911c499dc9f576bda37fc6c0057d44e3c089d74",
+      "size": 20749
     },
     "static/app.js": {
       "sha256": "743e7e475e0fa2b625a933d2380624ae2a3d6dab33e603767cd6763543649749",
@@ -102,10 +102,10 @@
       "size": 5140
     }
   },
-  "release_version": "1.0.0",
+  "release_version": "1.1.0",
   "schema_version": 1,
   "signature": {
     "algorithm": "ed25519",
-    "value": "Uko8/xMWP5/w8KKmqAXtjYkqzIP1eWVZCIzbbgmbODCul9OOa+XZVN53TWovm9ur8pUUfKGH4vKOtX9IILr2AA=="
+    "value": "6mSIYkXepsXbjexsz2mnH4njhbJuSlHinfHUNkdCTnoM6Jth1ZBz+YLXQVsoh+tq400pg6lm1ohdlGa79me8Bw=="
   }
 }
