@@ -28,10 +28,20 @@ from web_security import RequestBodyLimitMiddleware, SecurityHeadersMiddleware
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    try:
+        value = int(raw) if raw else default
+    except ValueError:
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_COOKIE = "omm_session"
 SESSION_MAX_AGE = 7 * 24 * 60 * 60
-FETCH_CONCURRENCY = 5
+FETCH_CONCURRENCY = _env_int("OMM_FETCH_CONCURRENCY", 5, 1, 20)
+UPDATE_STATUS_TTL = 3600.0
 MAX_IMPORT_LINES = 10_000
 MAX_REQUEST_BYTES = int(os.environ.get("OMM_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "1").strip().lower() not in {
@@ -47,7 +57,9 @@ CHECK_ORIGIN = os.environ.get("OMM_CHECK_ORIGIN", "1").strip().lower() not in {
 AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "0"))
 
 LOGIN_MAX_FAILS = 5
+LOGIN_FAIL_WINDOW_SECONDS = 300
 LOGIN_LOCK_SECONDS = 300
+_LOGIN_FAILS_MAX_ENTRIES = 10_000
 _login_fails: dict[str, list[float]] = {}
 _account_locks: dict[int, asyncio.Lock] = {}
 _batch_lock = asyncio.Lock()
@@ -100,18 +112,24 @@ async def _auto_check_hours() -> float:
     return max(0.0, AUTO_CHECK_DEFAULT_HOURS)
 
 
+AUTO_CHECK_POLL_SECONDS = 60.0
+AUTO_CHECK_STARTUP_DELAY = 600.0
+
+
 async def _auto_check_loop() -> None:
-    await asyncio.sleep(600)
+    await asyncio.sleep(AUTO_CHECK_STARTUP_DELAY)
+    last_run: float | None = None
     while True:
         try:
             hours = await _auto_check_hours()
-            if hours <= 0:
-                await asyncio.sleep(3600)
-                continue
-            logger.info("Automatic account health check started")
-            result = await _fetch_all_accounts(limit=1)
-            logger.info("Automatic account health check finished: %s", result)
-            await asyncio.sleep(hours * 3600)
+            interval = hours * 3600
+            now = time.monotonic()
+            if interval > 0 and (last_run is None or now - last_run >= interval):
+                last_run = now
+                logger.info("Automatic account health check started")
+                result = await _fetch_all_accounts(limit=1)
+                logger.info("Automatic account health check finished: %s", result)
+            await asyncio.sleep(AUTO_CHECK_POLL_SECONDS)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - keep background scheduler alive
@@ -214,13 +232,27 @@ def _canonical_origin(value: str) -> tuple[str, str, int] | None:
     return parsed.scheme, parsed.hostname.lower().rstrip("."), port or default_port
 
 
-def _configured_origins() -> set[tuple[str, str, int]]:
+_allowed_origins_cache: tuple[str, frozenset[tuple[str, str, int]]] = (
+    "",
+    frozenset(),
+)
+
+
+def _configured_origins() -> frozenset[tuple[str, str, int]]:
+    """Parse the origin allow-list only when the environment value changes."""
+    global _allowed_origins_cache
     configured = os.environ.get("OMM_ALLOWED_ORIGINS", "")
-    return {
-        canonical
-        for raw in configured.split(",")
-        if raw.strip() and (canonical := _canonical_origin(raw)) is not None
-    }
+    if _allowed_origins_cache[0] == configured:
+        return _allowed_origins_cache[1]
+    parsed = frozenset(
+        {
+            canonical
+            for raw in configured.split(",")
+            if raw.strip() and (canonical := _canonical_origin(raw)) is not None
+        }
+    )
+    _allowed_origins_cache = (configured, parsed)
+    return parsed
 
 
 def _origin_allowed(request: Request) -> bool:
@@ -270,24 +302,39 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+def _prune_login_fails(ip: str, now: float) -> list[float]:
+    record = [
+        stamp
+        for stamp in _login_fails.get(ip, ())
+        if now - stamp < LOGIN_FAIL_WINDOW_SECONDS
+    ]
+    _login_fails[ip] = record
+    return record
+
+
 def _login_locked(ip: str) -> int:
-    record = _login_fails.get(ip)
-    if not record:
+    now = time.time()
+    record = _prune_login_fails(ip, now)
+    if len(record) < LOGIN_MAX_FAILS:
         return 0
-    if record[1] and record[1] <= time.time():
+    lock_until = record[-LOGIN_MAX_FAILS] + LOGIN_LOCK_SECONDS
+    if lock_until <= now:
         _login_fails.pop(ip, None)
         return 0
-    if record[1]:
-        return max(1, int(record[1] - time.time()))
-    return 0
+    return max(1, int(lock_until - now) + 1)
 
 
 def _record_login_fail(ip: str) -> None:
-    record = _login_fails.setdefault(ip, [0.0, 0.0])
-    record[0] += 1
-    if record[0] >= LOGIN_MAX_FAILS:
-        record[0] = 0
-        record[1] = time.time() + LOGIN_LOCK_SECONDS
+    now = time.time()
+    if len(_login_fails) >= _LOGIN_FAILS_MAX_ENTRIES:
+        for stale_ip in list(_login_fails):
+            if not _prune_login_fails(stale_ip, now):
+                _login_fails.pop(stale_ip, None)
+            if len(_login_fails) < _LOGIN_FAILS_MAX_ENTRIES:
+                break
+    record = _prune_login_fails(ip, now)
+    record.append(now)
+    if len(record) >= LOGIN_MAX_FAILS:
         logger.warning("Login temporarily locked for client %s", ip)
 
 
@@ -1018,14 +1065,24 @@ async def api_account_emails(
     }
 
 
+_update_status_cache: dict[str, object] = {"checked_at": 0.0, "payload": None}
+
+
 @app.get("/api/update/status")
 async def update_status():
+    """Serve the cached release check; every page load used to hit GitHub."""
+    now = time.monotonic()
+    payload = _update_status_cache["payload"]
+    if payload is not None and now - _update_status_cache["checked_at"] < UPDATE_STATUS_TTL:
+        return payload
     try:
-        return await asyncio.to_thread(
+        payload = await asyncio.to_thread(
             update_manager.check_for_update, await _global_proxy()
         )
     except update_manager.UpdateError as exc:
         return JSONResponse({"error": str(exc)}, status_code=502)
+    _update_status_cache.update(checked_at=now, payload=payload)
+    return payload
 
 
 async def _restart_after_response() -> None:

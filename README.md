@@ -160,6 +160,7 @@ server {
 | `OMM_SECRET_KEY_FILE` | Fernet 密钥文件路径 | 数据库目录 `.omm_secret.key` |
 | `OMM_SECRET_KEY` | 32 字节随机 Fernet key 的 URL-safe Base64 | 无 |
 | `OMM_PROXY` | 未在页面保存设置时使用的全局代理 | 空 |
+| `OMM_FETCH_CONCURRENCY` | 批量取件/健康检测时同时处理的账号数（1-20） | `5` |
 | `OMM_MS_FETCH_MODE` | 新 Microsoft 账号默认模式：`graph`/`imap` | `graph` |
 | `OMM_AUTO_CHECK_HOURS` | 未在页面保存设置时的自动检测间隔 | `0` |
 | `OMM_MAX_REQUEST_BYTES` | POST/PUT/PATCH 请求体上限 | `2097152` |

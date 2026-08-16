@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import imaplib
 import json
 import logging
@@ -12,6 +13,15 @@ from unittest import mock
 import requests
 
 import mail_fetcher
+
+
+@contextlib.contextmanager
+def pooled_requests():
+    """Route pooled sessions to the requests module so request mocks apply."""
+    with mock.patch.object(
+        mail_fetcher, "_http_session", lambda: mail_fetcher.requests
+    ):
+        yield
 
 
 class FakeResponse:
@@ -65,6 +75,10 @@ class FakeFolderIMAP:
         self.calls.append(("RESPONSE", name))
         return "UIDVALIDITY", [self.uidvalidity]
 
+    def _expand_uid_arg(self, uid_arg):
+        raw = uid_arg if isinstance(uid_arg, bytes) else str(uid_arg).encode()
+        return [int(part) for part in raw.split(b",")]
+
     def uid(self, command, *args):
         self.calls.append((command, *args))
         if command == "SEARCH":
@@ -75,16 +89,28 @@ class FakeFolderIMAP:
         if command != "FETCH":
             raise AssertionError(f"Unexpected UID command: {command}")
 
-        uid = int(args[0])
+        uids = self._expand_uid_arg(args[0])
         query = args[1]
-        value = self.raw_messages[uid]
-        if query == "(RFC822.SIZE)":
-            size = value if isinstance(value, int) else len(value)
-            return "OK", [f"1 (UID {uid} RFC822.SIZE {size})".encode("ascii")]
-        if query == "(BODY.PEEK[])":
-            if isinstance(value, int):
+        if query in ("(RFC822.SIZE)", "(UID RFC822.SIZE)"):
+            lines = []
+            for uid in uids:
+                value = self.raw_messages[uid]
+                size = value if isinstance(value, int) else len(value)
+                lines.append(f"{uid} (UID {uid} RFC822.SIZE {size})".encode("ascii"))
+            return "OK", lines
+        if query in ("(BODY.PEEK[])", "(UID BODY.PEEK[])"):
+            if any(isinstance(self.raw_messages[uid], int) for uid in uids):
                 raise AssertionError("Oversized messages must not be downloaded")
-            return "OK", [(f"1 (UID {uid} BODY[] {{{len(value)}}})".encode(), value)]
+            items = []
+            for uid in uids:
+                value = self.raw_messages[uid]
+                items.append(
+                    (
+                        f"{uid} (UID {uid} BODY[] {{{len(value)}}})".encode("ascii"),
+                        value,
+                    )
+                )
+            return "OK", items
         raise AssertionError(f"Unexpected FETCH query: {query}")
 
 
@@ -219,17 +245,23 @@ class MailFetcherSecurityTests(unittest.TestCase):
         self.assertIn("visible body", result[0]["body"])
         self.assertNotIn("attachment secret", result[0]["body"])
         self.assertIn(("SEARCH", None, "ALL"), imap.calls)
-        self.assertIn(("FETCH", b"501", "(RFC822.SIZE)"), imap.calls)
-        self.assertIn(("FETCH", b"501", "(BODY.PEEK[])"), imap.calls)
-        self.assertIn(("FETCH", b"502", "(RFC822.SIZE)"), imap.calls)
-        self.assertNotIn(("FETCH", b"502", "(BODY.PEEK[])"), imap.calls)
+        self.assertIn(("FETCH", b"501,502", "(UID RFC822.SIZE)"), imap.calls)
+        body_calls = [
+            call for call in imap.calls if call[2:3] == ("(UID BODY.PEEK[])",)
+        ]
+        self.assertEqual(
+            body_calls,
+            [("FETCH", b"501", "(UID BODY.PEEK[])")],
+            "oversized messages must not be downloaded",
+        )
 
     def test_imap_rechecks_actual_body_size_after_declared_size(self):
         class MisreportingIMAP(FakeFolderIMAP):
             def uid(self, command, *args):
-                if command == "FETCH" and args[1] == "(RFC822.SIZE)":
+                if command == "FETCH" and args[1] == "(UID RFC822.SIZE)":
                     self.calls.append((command, *args))
-                    return "OK", [b"1 (UID 7 RFC822.SIZE 1)"]
+                    uid = self._expand_uid_arg(args[0])[0]
+                    return "OK", [f"1 (UID {uid} RFC822.SIZE 1)".encode("ascii")]
                 return super().uid(command, *args)
 
         raw = b"x" * 17
@@ -242,7 +274,31 @@ class MailFetcherSecurityTests(unittest.TestCase):
 
         self.assertEqual(result, [])
         self.assertEqual(stats, {"oversized": 1})
-        self.assertIn(("FETCH", b"7", "(BODY.PEEK[])"), imap.calls)
+        self.assertIn(("FETCH", b"7", "(UID BODY.PEEK[])"), imap.calls)
+
+    def test_batch_fetch_falls_back_when_server_reply_omits_messages(self):
+        message = EmailMessage()
+        message["From"] = "sender@example.test"
+        message["Subject"] = "fallback"
+        message.set_content("body")
+        raw = message.as_bytes()
+
+        class PartialReplyIMAP(FakeFolderIMAP):
+            def uid(self, command, *args):
+                if command == "FETCH" and args[1] == "(UID RFC822.SIZE)":
+                    self.calls.append((command, *args))
+                    return "OK", [b"9 (UID 9 RFC822.SIZE 5)"]
+                if command == "FETCH" and args[1] == "(UID BODY.PEEK[])":
+                    self.calls.append((command, *args))
+                    return "OK", [(b"9 (UID 9 BODY[] {5})", raw)]
+                return super().uid(command, *args)
+
+        imap = PartialReplyIMAP({9: raw, 10: raw})
+        result = mail_fetcher.fetch_folder_emails(imap, "INBOX", limit=10)
+
+        self.assertEqual([email["uid"] for email in result], ["777:9", "777:10"])
+        self.assertIn(("FETCH", b"10", "(RFC822.SIZE)"), imap.calls)
+        self.assertIn(("FETCH", b"10", "(BODY.PEEK[])"), imap.calls)
 
     def test_nested_attached_message_is_not_used_as_outer_body(self):
         attached = EmailMessage()
@@ -356,6 +412,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
             FakeResponse(200),
         ]
         with (
+            pooled_requests(),
             mock.patch.object(
                 mail_fetcher.requests, "get", side_effect=responses
             ) as get,
@@ -378,6 +435,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
             FakeResponse(500) for _attempt in range(mail_fetcher.GRAPH_MAX_ATTEMPTS)
         ]
         with (
+            pooled_requests(),
             mock.patch.object(
                 mail_fetcher.requests,
                 "get",
@@ -392,6 +450,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
     def test_graph_retries_transient_network_error(self):
         success = FakeResponse(200)
         with (
+            pooled_requests(),
             mock.patch.object(
                 mail_fetcher.requests,
                 "get",
@@ -414,6 +473,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
         for error in permanent_errors:
             with (
                 self.subTest(error=type(error).__name__),
+                pooled_requests(),
                 mock.patch.object(
                     mail_fetcher.requests, "get", side_effect=error
                 ) as get,
@@ -427,6 +487,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
     def test_graph_long_retry_after_returns_retry_later_without_sleeping(self):
         throttled = FakeResponse(429, headers={"Retry-After": "60"})
         with (
+            pooled_requests(),
             mock.patch.object(
                 mail_fetcher.requests, "get", return_value=throttled
             ) as get,
@@ -492,6 +553,7 @@ class MailFetcherSecurityTests(unittest.TestCase):
             payload={"access_token": "access-secret", "refresh_token": ""}
         )
         with (
+            pooled_requests(),
             mock.patch.dict(
                 os.environ, {"OMM_PROXY": "http://environment-proxy.test:8080"}
             ),
@@ -562,10 +624,13 @@ class MailFetcherSecurityTests(unittest.TestCase):
         old_level = mail_fetcher.logger.level
         mail_fetcher.logger.setLevel(logging.INFO)
         try:
-            with mock.patch.object(
-                mail_fetcher.requests,
-                "get",
-                side_effect=[FakeResponse(200), FakeResponse(200)],
+            with (
+                pooled_requests(),
+                mock.patch.object(
+                    mail_fetcher.requests,
+                    "get",
+                    side_effect=[FakeResponse(200), FakeResponse(200)],
+                ),
             ):
                 mail_fetcher._fetch_via_graph_with_access_token(
                     "user@example.test",

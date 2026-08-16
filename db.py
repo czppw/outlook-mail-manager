@@ -30,6 +30,8 @@ SESSION_DEFAULT_TTL = 7 * 24 * 60 * 60
 
 _ACCOUNT_SECRET_FIELDS = ("password", "client_secret", "refresh_token", "proxy")
 _SETTING_SECRET_KEYS = frozenset({"global_proxy"})
+_SETTINGS_CACHE_TTL = 10.0
+_settings_cache: dict[tuple[str, str], tuple[float, object]] = {}
 _CREDENTIAL_KEY_CHECK_SETTING = "credential_key_check"
 _CREDENTIAL_KEY_CHECK_VALUE = "outlook-mail-manager-key-check-v1"
 _SCRYPT_N = 2**14
@@ -634,26 +636,20 @@ def _verify_password(password: str, stored: str) -> tuple[bool, bool]:
     return hmac.compare_digest(actual, expected), needs_upgrade
 
 
-async def _get_setting(key: str):
+async def get_setting(key: str):
+    """Read a setting through a short-lived cache keyed per database."""
+    cache_key = (DB_PATH, key)
+    cached = _settings_cache.get(cache_key)
+    if cached is not None and time.monotonic() - cached[0] < _SETTINGS_CACHE_TTL:
+        return cached[1]
     async with _connection() as conn:
         cursor = await conn.execute("SELECT value FROM settings WHERE key = ?", (key,))
         row = await cursor.fetchone()
         value = row["value"] if row else None
         if key in _SETTING_SECRET_KEYS:
-            return security.decrypt_value(value, DB_PATH)
+            value = security.decrypt_value(value, DB_PATH)
+        _settings_cache[cache_key] = (time.monotonic(), value)
         return value
-
-
-async def _set_setting(key: str, value: str):
-    await set_settings({key: value})
-
-
-async def get_setting(key: str):
-    return await _get_setting(key)
-
-
-async def set_setting(key: str, value: str):
-    await _set_setting(key, value)
 
 
 async def set_settings(values: Mapping[str, str]) -> None:
@@ -678,6 +674,8 @@ async def set_settings(values: Mapping[str, str]) -> None:
         except Exception:
             await conn.rollback()
             raise
+    for key in values:
+        _settings_cache.pop((DB_PATH, key), None)
 
 
 async def verify_user(username: str, password: str) -> bool:
@@ -1121,9 +1119,6 @@ async def update_refresh_token_cas(
             raise
 
 
-compare_and_swap_refresh_token = update_refresh_token_cas
-
-
 async def acquire_account_lease(
     account_id: int, ttl_seconds: int = 15 * 60
 ) -> str | None:
@@ -1188,43 +1183,38 @@ async def set_all_ms_fetch_mode(fetch_mode: str) -> int:
         return cursor.rowcount
 
 
-async def refresh_token_date(account_id: int):
-    async with _connection() as conn:
-        await conn.execute(
-            "UPDATE accounts SET token_created_at = ? WHERE id = ?",
-            (_now_iso(), account_id),
-        )
-        await conn.commit()
-
-
 async def save_emails(account_id: int, folder: str, emails: list[dict]) -> int:
-    async with _connection() as conn:
-        count = 0
-        for email in emails:
-            uid = email.get("uid")
-            if uid is None or str(uid) == "":
-                raise ValueError("Email UID must not be empty")
-            cursor = await conn.execute(
-                """
-                INSERT INTO emails (
-                    account_id, folder, uid, from_addr, subject, body, body_html, date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(account_id, folder, uid) DO NOTHING
-                """,
-                (
-                    account_id,
-                    folder,
-                    str(uid),
-                    email.get("from", ""),
-                    email.get("subject", ""),
-                    email.get("body", ""),
-                    email.get("body_html", ""),
-                    email.get("date", ""),
-                ),
+    rows = []
+    for email in emails:
+        uid = email.get("uid")
+        if uid is None or str(uid) == "":
+            raise ValueError("Email UID must not be empty")
+        rows.append(
+            (
+                account_id,
+                folder,
+                str(uid),
+                email.get("from", ""),
+                email.get("subject", ""),
+                email.get("body", ""),
+                email.get("body_html", ""),
+                email.get("date", ""),
             )
-            count += cursor.rowcount
+        )
+    async with _connection() as conn:
+        before = conn.total_changes
+        await conn.executemany(
+            """
+            INSERT INTO emails (
+                account_id, folder, uid, from_addr, subject, body, body_html, date
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, folder, uid) DO NOTHING
+            """,
+            rows,
+        )
+        inserted = conn.total_changes - before
         await conn.commit()
-        return count
+        return inserted
 
 
 async def get_email_count(account_id: int) -> int:
@@ -1235,17 +1225,24 @@ async def get_email_count(account_id: int) -> int:
         return (await cursor.fetchone())[0]
 
 
+_EMAIL_LIST_COLUMNS = (
+    "id, account_id, folder, uid, from_addr, subject, date, is_read, fetched_at"
+)
+
+
 async def get_emails(
     account_id: int,
     folder: str | None = None,
     page: int = 1,
     per_page: int = 50,
 ):
+    """List emails without loading body columns used only by the detail page."""
     async with _connection() as conn:
         offset = (page - 1) * per_page
         if folder:
             cursor = await conn.execute(
-                "SELECT * FROM emails WHERE account_id = ? AND folder = ? "
+                f"SELECT {_EMAIL_LIST_COLUMNS} FROM emails "
+                "WHERE account_id = ? AND folder = ? "
                 "ORDER BY id DESC LIMIT ? OFFSET ?",
                 (account_id, folder, per_page, offset),
             )
@@ -1255,7 +1252,8 @@ async def get_emails(
             )
         else:
             cursor = await conn.execute(
-                "SELECT * FROM emails WHERE account_id = ? "
+                f"SELECT {_EMAIL_LIST_COLUMNS} FROM emails "
+                "WHERE account_id = ? "
                 "ORDER BY id DESC LIMIT ? OFFSET ?",
                 (account_id, per_page, offset),
             )
@@ -1290,18 +1288,14 @@ async def get_expiring_accounts(warning_days: int = TOKEN_WARNING_DAYS):
 
 async def get_stats():
     async with _connection() as conn:
-        cursor = await conn.execute("SELECT COUNT(*) FROM accounts")
-        total = (await cursor.fetchone())[0]
         cursor = await conn.execute(
-            "SELECT COUNT(*) FROM accounts WHERE status = 'active' AND enabled = 1"
+            "SELECT COUNT(*),"
+            " COALESCE(SUM(status = 'active' AND enabled = 1), 0),"
+            " COALESCE(SUM(status = 'error' AND enabled = 1), 0),"
+            " COALESCE(SUM(enabled = 0), 0)"
+            " FROM accounts"
         )
-        ok = (await cursor.fetchone())[0]
-        cursor = await conn.execute(
-            "SELECT COUNT(*) FROM accounts WHERE status = 'error' AND enabled = 1"
-        )
-        error = (await cursor.fetchone())[0]
-        cursor = await conn.execute("SELECT COUNT(*) FROM accounts WHERE enabled = 0")
-        disabled = (await cursor.fetchone())[0]
+        total, ok, error, disabled = await cursor.fetchone()
         cursor = await conn.execute("SELECT COUNT(*) FROM emails")
         total_emails = (await cursor.fetchone())[0]
         return {

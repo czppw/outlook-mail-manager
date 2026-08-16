@@ -8,6 +8,7 @@ import math
 import os
 import re
 import ssl
+import threading
 import time
 from datetime import datetime, timezone
 from email.header import decode_header
@@ -21,9 +22,21 @@ logger = logging.getLogger(__name__)
 IMAP_TIMEOUT = 30
 HTTP_TIMEOUT = 20
 MAX_EMAIL_BYTES = 10 * 1024 * 1024
+IMAP_BODY_BATCH_SIZE = 20
 GRAPH_MAX_ATTEMPTS = 4
 GRAPH_BACKOFF_BASE = 0.5
 GRAPH_BACKOFF_CAP = 8.0
+
+_thread_state = threading.local()
+
+
+def _http_session() -> requests.Session:
+    """Reuse pooled connections for token refreshes and Graph requests."""
+    session = getattr(_thread_state, "session", None)
+    if session is None:
+        session = requests.Session()
+        _thread_state.session = session
+    return session
 
 PROVIDERS = {
     "microsoft": {
@@ -132,7 +145,7 @@ def get_access_token(
         data["client_secret"] = client_secret
 
     try:
-        resp = requests.post(
+        resp = _http_session().post(
             provider["token_url"],
             data=data,
             timeout=HTTP_TIMEOUT,
@@ -448,13 +461,100 @@ def _record_oversized_message(
     )
 
 
+def _uid_set(message_uids: list[bytes]) -> bytes:
+    return b",".join(message_uids)
+
+
+_UID_IN_FETCH_HEADER = re.compile(rb"UID\s+(\d+)")
+
+
+def _fetch_header(item) -> bytes | None:
+    header = item[0] if isinstance(item, tuple) and item else item
+    if isinstance(header, str):
+        header = header.encode("ascii", errors="ignore")
+    return header if isinstance(header, bytes) else None
+
+
+def _parse_size_map(fetch_data) -> dict[str, int]:
+    """Map UID to declared RFC822.SIZE from a batched FETCH response."""
+    sizes: dict[str, int] = {}
+    for item in fetch_data or []:
+        header = _fetch_header(item)
+        if header is None:
+            continue
+        uid_match = _UID_IN_FETCH_HEADER.search(header)
+        size_match = re.search(rb"RFC822\.SIZE\s+(\d+)", header, re.IGNORECASE)
+        if uid_match and size_match:
+            sizes[uid_match.group(1).decode("ascii")] = int(size_match.group(1))
+    return sizes
+
+
+def _parse_body_map(fetch_data) -> dict[str, bytes]:
+    """Map UID to raw message bytes from a batched FETCH response."""
+    bodies: dict[str, bytes] = {}
+    for item in fetch_data or []:
+        if not (
+            isinstance(item, tuple) and len(item) >= 2 and isinstance(item[1], bytes)
+        ):
+            continue
+        header = _fetch_header(item)
+        uid_match = _UID_IN_FETCH_HEADER.search(header) if header else None
+        if uid_match:
+            bodies[uid_match.group(1).decode("ascii")] = item[1]
+    return bodies
+
+
+def _fetch_declared_sizes(
+    imap: imaplib.IMAP4_SSL, folder: str, message_uids: list[bytes]
+) -> dict[str, int]:
+    status, size_data = imap.uid("FETCH", _uid_set(message_uids), "(UID RFC822.SIZE)")
+    if status != "OK":
+        raise imaplib.IMAP4.error(
+            f"UID FETCH RFC822.SIZE failed for folder {folder!r}"
+        )
+    return _parse_size_map(size_data)
+
+
+def _fetch_single_message_size(
+    imap: imaplib.IMAP4_SSL, folder: str, message_uid: bytes
+) -> int:
+    """Fallback for servers whose batched replies omit a message."""
+    status, size_data = imap.uid("FETCH", message_uid, "(RFC822.SIZE)")
+    if status != "OK":
+        raise imaplib.IMAP4.error(
+            f"UID FETCH RFC822.SIZE failed for folder {folder!r}"
+        )
+    return _extract_rfc822_size(size_data)
+
+
+def _fetch_message_bodies(
+    imap: imaplib.IMAP4_SSL, folder: str, message_uids: list[bytes]
+) -> dict[str, bytes]:
+    status, body_data = imap.uid(
+        "FETCH", _uid_set(message_uids), "(UID BODY.PEEK[])"
+    )
+    if status != "OK":
+        raise imaplib.IMAP4.error(f"UID FETCH BODY failed for folder {folder!r}")
+    return _parse_body_map(body_data)
+
+
+def _fetch_single_message_body(
+    imap: imaplib.IMAP4_SSL, folder: str, message_uid: bytes
+) -> bytes:
+    """Fallback for servers whose batched replies omit a message."""
+    status, message_data = imap.uid("FETCH", message_uid, "(BODY.PEEK[])")
+    if status != "OK":
+        raise imaplib.IMAP4.error(f"UID FETCH BODY failed for folder {folder!r}")
+    return _extract_raw_message(message_data)
+
+
 def fetch_folder_emails(
     imap: imaplib.IMAP4_SSL,
     folder: str,
     limit: int = 50,
     stats: dict[str, int] | None = None,
 ) -> list[dict]:
-    """Fetch a folder by stable IMAP UID and report partial parsing failures."""
+    """Fetch a folder in batched UID FETCH calls and report partial failures."""
     status, _ = imap.select(folder, readonly=True)
     if status != "OK":
         raise imaplib.IMAP4.error(f"Cannot select folder {folder!r}")
@@ -468,9 +568,9 @@ def fetch_folder_emails(
 
     message_uids = data[0].split()
     message_uids = message_uids[-limit:]
-    emails = []
-    parse_failures = 0
+    declared_sizes = _fetch_declared_sizes(imap, folder, message_uids)
 
+    eligible: list[tuple[bytes, str]] = []
     for message_uid in message_uids:
         uid_text = (
             message_uid.decode("ascii")
@@ -478,35 +578,44 @@ def fetch_folder_emails(
             else str(message_uid)
         )
         stable_uid = f"{uidvalidity}:{uid_text}"
-
-        status, size_data = imap.uid("FETCH", message_uid, "(RFC822.SIZE)")
-        if status != "OK":
-            raise imaplib.IMAP4.error(
-                f"UID FETCH RFC822.SIZE failed for folder {folder!r}"
-            )
-        message_size = _extract_rfc822_size(size_data)
+        message_size = declared_sizes.get(uid_text)
+        if message_size is None:
+            message_size = _fetch_single_message_size(imap, folder, message_uid)
         if message_size > MAX_EMAIL_BYTES:
             _record_oversized_message(stats, folder, stable_uid, message_size)
             continue
+        eligible.append((message_uid, stable_uid))
 
-        status, message_data = imap.uid("FETCH", message_uid, "(BODY.PEEK[])")
-        if status != "OK":
-            raise imaplib.IMAP4.error(f"UID FETCH BODY failed for folder {folder!r}")
-        raw_email = _extract_raw_message(message_data)
-        if len(raw_email) > MAX_EMAIL_BYTES:
-            _record_oversized_message(stats, folder, stable_uid, len(raw_email))
-            continue
-        try:
-            parsed = _decode_message(raw_email)
-        except Exception:  # noqa: BLE001 - isolate malformed MIME messages
-            parse_failures += 1
-            logger.warning(
-                "Skipping malformed email folder=%r uid=%s",
-                folder,
-                stable_uid,
+    emails = []
+    parse_failures = 0
+    for start in range(0, len(eligible), IMAP_BODY_BATCH_SIZE):
+        chunk = eligible[start : start + IMAP_BODY_BATCH_SIZE]
+        bodies = _fetch_message_bodies(
+            imap, folder, [message_uid for message_uid, _ in chunk]
+        )
+        for message_uid, stable_uid in chunk:
+            uid_text = (
+                message_uid.decode("ascii")
+                if isinstance(message_uid, bytes)
+                else str(message_uid)
             )
-            continue
-        emails.append({"uid": stable_uid, **parsed})
+            raw_email = bodies.get(uid_text)
+            if raw_email is None:
+                raw_email = _fetch_single_message_body(imap, folder, message_uid)
+            if len(raw_email) > MAX_EMAIL_BYTES:
+                _record_oversized_message(stats, folder, stable_uid, len(raw_email))
+                continue
+            try:
+                parsed = _decode_message(raw_email)
+            except Exception:  # noqa: BLE001 - isolate malformed MIME messages
+                parse_failures += 1
+                logger.warning(
+                    "Skipping malformed email folder=%r uid=%s",
+                    folder,
+                    stable_uid,
+                )
+                continue
+            emails.append({"uid": stable_uid, **parsed})
 
     if parse_failures:
         raise FolderFetchError(folder, parse_failures, emails)
@@ -595,7 +704,7 @@ def _graph_get(url: str, headers: dict, params: dict, proxies):
     retryable_statuses = {408, 429}
     for attempt in range(GRAPH_MAX_ATTEMPTS):
         try:
-            response = requests.get(
+            response = _http_session().get(
                 url,
                 headers=headers,
                 params=params,
@@ -732,163 +841,4 @@ async def check_account_with_access_token(
             fetch_mode=fetch_mode,
             proxy=proxy,
         ),
-    )
-
-
-def list_folders_with_access_token(
-    email_addr: str,
-    access_token: str,
-    provider_key: str = "microsoft",
-    proxy: str | None = None,
-) -> list[str]:
-    """List IMAP folders with an already refreshed access token."""
-    provider = get_provider_config(provider_key)
-    imap = _open_imap(provider["imap_host"], provider["imap_port"], proxy=proxy)
-    try:
-        auth_string = build_xoauth2_auth(email_addr, access_token)
-        try:
-            imap.authenticate("XOAUTH2", lambda _challenge: auth_string)
-        except imaplib.IMAP4.error:
-            raise RuntimeError("XOAUTH2 authentication failed") from None
-        status, folder_list = imap.list()
-        if status != "OK":
-            raise imaplib.IMAP4.error("IMAP LIST failed")
-        folders = []
-        for folder in folder_list or []:
-            value = folder.decode(errors="replace")
-            parts = value.split('"')
-            folders.append(parts[-2] if len(parts) >= 3 else value.split()[-1])
-        return folders
-    finally:
-        _close_imap(imap)
-
-
-def _fetch_via_imap(
-    email_addr: str,
-    client_id: str,
-    refresh_token: str,
-    provider_key: str,
-    client_secret: str,
-    proxy: str | None,
-    limit: int,
-) -> tuple[dict, str]:
-    access_token, new_refresh_token = get_access_token(
-        client_id,
-        refresh_token,
-        provider_key,
-        client_secret,
-        proxy=proxy,
-    )
-    return (
-        _fetch_via_imap_with_access_token(
-            email_addr, access_token, provider_key, proxy, limit
-        ),
-        new_refresh_token,
-    )
-
-
-def _fetch_via_graph(
-    email_addr: str,
-    client_id: str,
-    refresh_token: str,
-    client_secret: str,
-    proxy: str | None,
-    limit: int,
-) -> tuple[dict, str]:
-    provider = get_provider_config("microsoft")
-    access_token, new_refresh_token = get_access_token(
-        client_id,
-        refresh_token,
-        "microsoft",
-        client_secret,
-        proxy=proxy,
-        scope_override=provider["graph_scope"],
-    )
-    return (
-        _fetch_via_graph_with_access_token(email_addr, access_token, proxy, limit),
-        new_refresh_token,
-    )
-
-
-def fetch_all_emails(
-    email_addr: str,
-    password: str,
-    client_id: str,
-    refresh_token: str,
-    provider_key: str = "microsoft",
-    client_secret: str = "",
-    limit: int = 50,
-    fetch_mode: str = "imap",
-    proxy: str | None = None,
-) -> tuple[dict, str]:
-    """Compatibility entry point used by existing scripts and integrations."""
-
-    del password
-    if provider_key == "microsoft" and fetch_mode == "graph":
-        return _fetch_via_graph(
-            email_addr,
-            client_id,
-            refresh_token,
-            client_secret,
-            proxy,
-            limit,
-        )
-    return _fetch_via_imap(
-        email_addr,
-        client_id,
-        refresh_token,
-        provider_key,
-        client_secret,
-        proxy,
-        limit,
-    )
-
-
-async def check_account(
-    email_addr: str,
-    password: str,
-    client_id: str,
-    refresh_token: str,
-    provider_key: str = "microsoft",
-    client_secret: str = "",
-    limit: int = 50,
-    fetch_mode: str = "imap",
-    proxy: str | None = None,
-) -> tuple[dict, str]:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: fetch_all_emails(
-            email_addr,
-            password,
-            client_id,
-            refresh_token,
-            provider_key,
-            client_secret,
-            limit,
-            fetch_mode,
-            proxy,
-        ),
-    )
-
-
-def list_folders(
-    email_addr: str,
-    password: str,
-    client_id: str,
-    refresh_token: str,
-    provider_key: str = "microsoft",
-    client_secret: str = "",
-    proxy: str | None = None,
-) -> list[str]:
-    del password
-    access_token, _ = get_access_token(
-        client_id,
-        refresh_token,
-        provider_key,
-        client_secret,
-        proxy=proxy,
-    )
-    return list_folders_with_access_token(
-        email_addr, access_token, provider_key, proxy
     )

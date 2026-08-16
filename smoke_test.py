@@ -81,20 +81,27 @@ def test_graph_mapping():
 
     original_post = mail_fetcher.requests.post
     original_get = mail_fetcher.requests.get
+    original_session = mail_fetcher._http_session
     mail_fetcher.requests.post = fake_post
     mail_fetcher.requests.get = fake_get
+    mail_fetcher._http_session = lambda: mail_fetcher.requests
     try:
-        results, new_token = mail_fetcher._fetch_via_graph(
-            "u@outlook.com",
+        access_token, new_token = mail_fetcher.get_access_token(
             "cid",
             "RT",
-            "",
+            scope_override=mail_fetcher.PROVIDERS["microsoft"]["graph_scope"],
+            proxy="",
+        )
+        results = mail_fetcher._fetch_via_graph_with_access_token(
+            "u@outlook.com",
+            access_token,
             "",
             10,
         )
     finally:
         mail_fetcher.requests.post = original_post
         mail_fetcher.requests.get = original_get
+        mail_fetcher._http_session = original_session
 
     check("rotated refresh token returned", new_token == "NEW_RT")
     check(
