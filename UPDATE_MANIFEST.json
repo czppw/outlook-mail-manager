@@ -2,12 +2,12 @@
   "delete": [],
   "files": {
     "VERSION": {
-      "sha256": "206620a657f1ccc8af72b866fdcef20e641c48f39ce27f338ce8313949c63e53",
+      "sha256": "1ec4fab0d8dd5eafef82e67f61a35c03ee994988a5293e17cf3d3e97c3511847",
       "size": 5
     },
     "app.py": {
-      "sha256": "1e57a8cdd1a4b43b7b829f194fa5c246de9f640866a8101cb8f49ced26186763",
-      "size": 36766
+      "sha256": "2102a544afef4bc3d38409c8f7855e6624496c99d747486aa322871621efd0e6",
+      "size": 36873
     },
     "build_update_manifest.py": {
       "sha256": "fdfb1e3b0775d60b55829c21822e66cde1454b825617bf99f15640bcb5858572",
@@ -46,12 +46,12 @@
       "size": 20812
     },
     "static/app.js": {
-      "sha256": "87fd56c7c72ba4686a4125f71e15e9733c3c6d0ec8876f20f47d2050bbea3a35",
-      "size": 10678
+      "sha256": "5ba9dc5be03e198f85e4e735fdd033523d89fa8482c7b4dc2584c5a11418038c",
+      "size": 11114
     },
     "static/style.css": {
-      "sha256": "537eb0633a1f0391fe4aab0ac5339cde3af5fcec756c6d3f0036c31f85d529c1",
-      "size": 22505
+      "sha256": "6f56b12c112d7e6d71db7002ee24954ab4bdc716243b4a6babbf081195c60c8d",
+      "size": 23626
     },
     "templates/base.html": {
       "sha256": "6ce2692a38fadccc0e7a1a289f81c4eff7ee45e52003306971413c916d2fbd4e",
@@ -102,10 +102,10 @@
       "size": 5140
     }
   },
-  "release_version": "1.2.1",
+  "release_version": "1.2.2",
   "schema_version": 1,
   "signature": {
     "algorithm": "ed25519",
-    "value": "PtgRHMD30WZLAdlrjxdXn3GpKCLRmbQXv90yJIStbsIjoOm+Ygx6aQNMj62X1h33QMyyrf/PP82CSHpxflorCQ=="
+    "value": "hgrGKGgrvA2AKQiZWuZA4iYrJh3gskaXKfr0T1wQobt78o0iwLUNxjucIDHV8hl8MCLWwlE74T/HRdyT4EguCQ=="
   }
 }
