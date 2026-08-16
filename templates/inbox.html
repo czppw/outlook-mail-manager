@@ -1,32 +1,35 @@
 {% extends "base.html" %}
 {% block title %}{{ account['email'] }} - 收件箱{% endblock %}
 {% block content %}
+<div class="page-head">
+    <div>
+        <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            {{ account['email'] }}
+            {% if account.get('provider') == 'microsoft' and account.get('fetch_mode') == 'graph' %}
+                <span class="badge badge-ms">Graph</span>
+            {% else %}
+                <span class="badge">IMAP</span>
+            {% endif %}
+            <span class="badge badge-{{ account['status'] }}">{{ account['status'] }}</span>
+        </h1>
+        <p class="page-sub">
+            邮件 {{ account['mail_count'] or 0 }} 封 · 上次取件 {{ account['last_check'] | fmt_dt if account['last_check'] else '未取件' }}
+        </p>
+    </div>
+    <div class="page-actions">
+        <button class="btn btn-primary js-fetch-account" data-account-id="{{ account['id'] }}">⚡ 取件</button>
+        <a href="/" class="btn">返回</a>
+    </div>
+</div>
+
 <div class="card">
-    <div class="card-header">
-        <h2>📬 {{ account['email'] }}</h2>
-        <div>
-            <button class="btn btn-primary js-fetch-account" data-account-id="{{ account['id'] }}">取件</button>
-            <a href="/" class="btn">返回</a>
-        </div>
-    </div>
-
-    <div class="account-info">
-        <span class="badge badge-{{ account['status'] }}">{{ account['status'] }}</span>
-        {% if account.get('provider') == 'microsoft' and account.get('fetch_mode') == 'graph' %}
-        <span class="badge badge-ok">Graph</span>
-        {% else %}
-        <span class="badge">IMAP</span>
-        {% endif %}
-        <span>邮件: {{ account['mail_count'] or 0 }}</span>
-        <span>上次取件: {{ account['last_check'] | fmt_dt if account['last_check'] else '未取件' }}</span>
-    </div>
-
     <div class="folder-tabs">
         <a href="/account/{{ account['id'] }}" class="tab {{ 'active' if not folder else '' }}">全部</a>
         <a href="/account/{{ account['id'] }}?folder=INBOX" class="tab {{ 'active' if folder == 'INBOX' else '' }}">📥 收件箱</a>
         <a href="/account/{{ account['id'] }}?folder=JUNK" class="tab {{ 'active' if folder == 'JUNK' else '' }}">🗑️ 垃圾邮件</a>
     </div>
 
+    <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -39,21 +42,22 @@
         <tbody id="mail-tbody">
         {% for em in emails %}
             <tr>
-                <td>{{ em['from_addr'][:50] }}</td>
+                <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ em['from_addr'][:50] }}</td>
                 <td><a href="/email/{{ em['id'] }}">{{ em['subject'][:80] or '(无主题)' }}</a></td>
-                <td>{{ em['date'] | fmt_dt }}</td>
+                <td style="color: var(--text-dim); white-space: nowrap;">{{ em['date'] | fmt_dt }}</td>
                 <td><span class="badge">{{ em['folder'] }}</span></td>
             </tr>
         {% else %}
-            <tr id="empty-row"><td colspan="4" class="empty">暂无邮件，点击上方「取件」按钮获取</td></tr>
+            <tr id="empty-row"><td colspan="4" class="empty"><div class="empty-icon">📭</div>暂无邮件，点击右上角「取件」按钮获取</td></tr>
         {% endfor %}
         </tbody>
     </table>
+    </div>
 
     <div class="pagination" style="margin-top: 16px;">
         <span id="page-info">已加载 {{ emails|length }} / {{ total }} 封</span>
         {% if total_pages > page %}
-        <button id="load-more-btn" class="btn btn-sm">加载更多 ↓</button>
+            <button id="load-more-btn" class="btn btn-sm">加载更多 ↓</button>
         {% endif %}
     </div>
 </div>

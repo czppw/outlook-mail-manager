@@ -1,33 +1,52 @@
 {% extends "base.html" %}
-{% block title %}令牌状态{% endblock %}
+{% block title %}令牌状态 - Mail Manager{% endblock %}
 {% block content %}
-<div class="page-header">
-    <h2>⏰ 令牌过期管理</h2>
-</div>
-
-<div class="stats-bar">
-    <div class="stat">
-        <div class="stat-num">{{ stats.total }}</div>
-        <div class="stat-label">总账号数</div>
-    </div>
-    <div class="stat">
-        <div class="stat-num" style="color: #f44336;">{{ expiring|selectattr('days_left', 'le', 0)|list|length }}</div>
-        <div class="stat-label">已过期</div>
-    </div>
-    <div class="stat">
-        <div class="stat-num" style="color: #ff9800;">{{ expiring|selectattr('days_left', 'gt', 0)|list|length }}</div>
-        <div class="stat-label">即将过期 (14天内)</div>
+<div class="page-head">
+    <div>
+        <h1>令牌状态</h1>
+        <p class="page-sub">跟踪 refresh token 有效期，及时验证或替换即将过期的账号</p>
     </div>
 </div>
 
-<div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
-    <p><strong>提醒依据：</strong>距离上次成功刷新超过 {{ token_lifetime_days }} 天</p>
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><path d="M8 13h8"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ stats.total }}</strong></span>
+            <span class="stat-label">总账号数</span>
+        </div>
+    </div>
+    <div class="stat-card tone-err">
+        <div class="stat-icon err">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ expiring|selectattr('days_left', 'le', 0)|list|length }}</strong></span>
+            <span class="stat-label">已过期</span>
+        </div>
+    </div>
+    <div class="stat-card">
+        <div class="stat-icon ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ expiring|selectattr('days_left', 'gt', 0)|list|length }}</strong></span>
+            <span class="stat-label">即将过期（{{ warning_days }} 天内）</span>
+        </div>
+    </div>
+</div>
+
+<div class="info-box">
+    <p><strong>提醒依据：</strong>距离上次成功刷新超过 {{ token_lifetime_days }} 天的令牌视为过期</p>
     <p><strong>提醒规则：</strong>达到提醒阈值后请验证或替换 refresh token</p>
 </div>
 
 {% if expiring %}
-<div class="alert-section">
-    <h3 style="color: #ff9800; margin-bottom: 12px;">⚠️ 需要处理的账号</h3>
+<div class="card">
+    <div class="card-header"><h2>⚠️ 需要处理的账号</h2></div>
+    <div class="table-wrap">
     <table>
         <thead>
             <tr>
@@ -44,39 +63,38 @@
                 <td>{{ acc['email'] }}</td>
                 <td>
                     {% if acc['days_left'] <= 0 %}
-                    <span class="status-badge status-error">已过期</span>
+                        <span class="status-badge status-error">已过期</span>
                     {% else %}
-                    <span class="status-badge" style="background: rgba(255,152,0,0.2); color: #ff9800;">
-                        {{ acc['days_left'] }}天后过期
-                    </span>
+                        <span class="status-badge status-warn">{{ acc['days_left'] }} 天后过期</span>
                     {% endif %}
                 </td>
                 <td>
                     {% if acc['days_left'] <= 0 %}
-                    <span style="color: #f44336; font-weight: bold;">过期 {{ -acc['days_left'] }} 天</span>
+                        <span style="color: var(--err); font-weight: 700;">过期 {{ -acc['days_left'] }} 天</span>
                     {% else %}
-                    <span style="color: #ff9800; font-weight: bold;">{{ acc['days_left'] }} 天</span>
+                        <span style="color: var(--warn); font-weight: 700;">{{ acc['days_left'] }} 天</span>
                     {% endif %}
                 </td>
-                <td>{{ acc['token_created_at'] | fmt_dt }}</td>
-                <td>
-                    <div style="display: flex; gap: 6px;">
-                        <form method="post" action="/account/{{ acc['id'] }}/refresh-token" style="display:inline;">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button type="submit" class="btn btn-small btn-primary" title="连接上游验证令牌">验证</button>
-                        </form>
-                        <a href="/account/{{ acc['id'] }}" class="btn btn-small">查看</a>
-                    </div>
+                <td style="color: var(--text-dim); white-space: nowrap;">{{ acc['token_created_at'] | fmt_dt }}</td>
+                <td class="actions">
+                    <form method="post" action="/account/{{ acc['id'] }}/refresh-token">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button type="submit" class="btn btn-small btn-primary" title="连接上游验证令牌">验证</button>
+                    </form>
+                    <a href="/account/{{ acc['id'] }}" class="btn btn-small">查看</a>
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
+    </div>
 </div>
 {% else %}
-<div style="text-align: center; padding: 40px; color: var(--text-muted);">
-    <p style="font-size: 1.5rem; margin-bottom: 8px;">✅</p>
-    <p>所有令牌状态正常，暂无需要处理的账号</p>
+<div class="card">
+    <div class="empty">
+        <div class="empty-icon">✅</div>
+        所有令牌状态正常，暂无需要处理的账号
+    </div>
 </div>
 {% endif %}
 {% endblock %}

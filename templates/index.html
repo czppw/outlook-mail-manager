@@ -1,60 +1,101 @@
 {% extends "base.html" %}
-{% block title %}邮箱管理 - 账号列表{% endblock %}
+{% block title %}账号总览 - Mail Manager{% endblock %}
 {% block content %}
+<div class="page-head">
+    <div>
+        <h1>账号总览</h1>
+        <p class="page-sub">管理 OAuth2 邮箱账号池，执行取件与健康检测</p>
+    </div>
+    <div class="page-actions">
+        <button id="check-all-btn" class="btn" title="检测全部启用账号">🩺 一键检测</button>
+        <button id="fetch-all-btn" class="btn btn-primary">⚡ 全部取件</button>
+    </div>
+</div>
+
 {% if expiring %}
-<div class="alert alert-warning" style="margin-bottom: 16px; display: flex; align-items: center; justify-content: space-between;">
+<div class="alert alert-warning">
     <span>⚠️ 有 <strong>{{ expiring|length }}</strong> 个账号令牌即将过期或已过期</span>
     <a href="/tokens" class="btn btn-sm btn-warn">查看详情</a>
 </div>
 {% endif %}
 
-<div class="stats-bar">
-    <div class="stat">📊 总账号: <strong>{{ stats.total }}</strong></div>
-    <div class="stat active">✅ 活跃: <strong>{{ stats.ok }}</strong></div>
-    <a href="/?status=error" class="stat error" title="点击筛选异常账号">❌ 异常: <strong>{{ stats.error }}</strong></a>
-    <div class="stat">📬 邮件总数: <strong>{{ stats.total_emails }}</strong></div>
-    <button id="check-all-btn" class="btn" title="检测全部启用账号">一键检测</button>
-    <button id="fetch-all-btn" class="btn btn-primary">全部取件</button>
+<div class="stats-grid">
+    <div class="stat-card">
+        <div class="stat-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ stats.total }}</strong></span>
+            <span class="stat-label">总账号</span>
+        </div>
+    </div>
+    <div class="stat-card tone-ok">
+        <div class="stat-icon ok">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ stats.ok }}</strong></span>
+            <span class="stat-label">活跃账号</span>
+        </div>
+    </div>
+    <a href="/?status=error" class="stat-card tone-err" title="点击筛选异常账号">
+        <div class="stat-icon err">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ stats.error }}</strong></span>
+            <span class="stat-label">异常账号</span>
+        </div>
+    </a>
+    <div class="stat-card">
+        <div class="stat-icon info">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z" opacity="0"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/><rect width="18" height="14" x="3" y="5" rx="2"/></svg>
+        </div>
+        <div class="stat-body">
+            <span class="stat-value"><strong>{{ stats.total_emails }}</strong></span>
+            <span class="stat-label">已存邮件</span>
+        </div>
+    </div>
 </div>
 
 <div class="card">
     <div class="card-header">
-        <h2>账号列表 ({{ total }})</h2>
-        <div style="display: flex; gap: 8px;">
-            <a href="/import" class="btn btn-sm">+ 导入账号</a>
+        <h2>账号列表 <span style="color: var(--text-faint); font-weight: 500;">· {{ total }}</span></h2>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <a href="/import" class="btn btn-sm">＋ 导入账号</a>
             <button id="export-selected" class="btn btn-sm">导出选中</button>
             <a href="/tokens" class="btn btn-sm">⏰ 令牌管理</a>
         </div>
     </div>
 
-    <form method="get" action="/" class="filter-bar" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; align-items: center;">
-        <select name="provider" class="btn btn-sm js-auto-submit">
+    <form method="get" action="/" class="filter-bar">
+        <select name="provider" class="js-auto-submit">
             <option value="">全部供应商</option>
             <option value="microsoft" {{ 'selected' if provider == 'microsoft' }}>Microsoft</option>
             <option value="google" {{ 'selected' if provider == 'google' }}>Gmail</option>
         </select>
-        <select name="status" class="btn btn-sm js-auto-submit">
+        <select name="status" class="js-auto-submit">
             <option value="">全部状态</option>
             <option value="active" {{ 'selected' if status == 'active' }}>✅ 正常</option>
             <option value="error" {{ 'selected' if status == 'error' }}>❌ 异常</option>
             <option value="pending" {{ 'selected' if status == 'pending' }}>⏳ 待取件</option>
             <option value="disabled" {{ 'selected' if status == 'disabled' }}>🚫 已禁用</option>
         </select>
-        <select name="fetch_mode" class="btn btn-sm js-auto-submit">
+        <select name="fetch_mode" class="js-auto-submit">
             <option value="">全部取件方式</option>
             <option value="graph" {{ 'selected' if fetch_mode == 'graph' }}>Graph</option>
             <option value="imap" {{ 'selected' if fetch_mode == 'imap' }}>IMAP</option>
         </select>
-        <input type="text" name="q" value="{{ q }}" placeholder="搜索邮箱关键词..."
-               style="width: 200px; padding: 6px 10px; font-size: 13px;">
+        <input type="text" name="q" value="{{ q }}" placeholder="搜索邮箱关键词...">
         <button type="submit" class="btn btn-sm btn-primary">筛选</button>
         {% if qs %}<a href="/" class="btn btn-sm">重置</a>{% endif %}
     </form>
 
+    <div class="table-wrap">
     <table>
         <thead>
             <tr>
-                <th style="width: 30px;"><input type="checkbox" id="select-all" title="全选本页"></th>
+                <th style="width: 34px;"><input type="checkbox" id="select-all" title="全选本页"></th>
                 <th>#</th>
                 <th>邮箱</th>
                 <th>供应商</th>
@@ -71,7 +112,7 @@
         {% for acc in accounts %}
             <tr class="{{ 'row-error' if acc['status'] == 'error' else '' }} {{ 'row-disabled' if not acc['enabled'] else '' }}">
                 <td><input type="checkbox" class="account-check" value="{{ acc['id'] }}"></td>
-                <td>{{ acc['id'] }}</td>
+                <td class="num" style="color: var(--text-faint);">{{ acc['id'] }}</td>
                 <td><a href="/account/{{ acc['id'] }}">{{ acc['email'] }}</a></td>
                 <td>
                     {% if acc.get('provider', 'microsoft') == 'google' %}
@@ -82,7 +123,7 @@
                 </td>
                 <td>
                     {% if acc.get('provider', 'microsoft') == 'microsoft' %}
-                    <select class="btn btn-sm js-fetch-mode" style="padding: 2px 6px;"
+                    <select class="btn btn-sm js-fetch-mode"
                             data-previous="{{ acc.get('fetch_mode', 'imap') }}"
                             data-account-id="{{ acc['id'] }}">
                         <option value="graph" {{ 'selected' if acc.get('fetch_mode') == 'graph' }}>Graph</option>
@@ -97,25 +138,25 @@
                 </td>
                 <td>
                     {% if acc['days_left'] is none %}
-                        <span class="badge badge-warn">未知</span>
+                        <span class="badge">未知</span>
                     {% elif acc['days_left'] <= 0 %}
-                        <span class="badge badge-error" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">已过期 {{ -acc['days_left'] }}天</span>
+                        <span class="badge badge-error" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">过期 {{ -acc['days_left'] }} 天</span>
                     {% elif acc['days_left'] <= warning_days %}
-                        <span class="badge badge-warn" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">{{ acc['days_left'] }}天后过期</span>
+                        <span class="badge badge-warn" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">{{ acc['days_left'] }} 天后过期</span>
                     {% else %}
                         <span class="badge badge-ok" title="创建于 {{ acc['token_created_at'] | fmt_dt }}">正常</span>
                     {% endif %}
                 </td>
-                <td><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
-                <td>{{ acc['last_check'] | fmt_dt }}</td>
+                <td class="num"><a href="/account/{{ acc['id'] }}" title="点击查看该账号邮件">{{ acc['mail_count'] or 0 }}</a></td>
+                <td style="color: var(--text-dim); white-space: nowrap;">{{ acc['last_check'] | fmt_dt }}</td>
                 <td class="error-text" title="{{ acc['error'] or '' }}">
-                    {% if acc['error_kind'] %}<span class="badge badge-error">{{ acc['error_kind'] }}</span>{% endif %}
-                    {{ (acc['error'] or '-')[:30] }}
+                    {% if acc['error_kind'] %}<span class="badge badge-error" style="margin-right: 4px;">{{ acc['error_kind'] }}</span>{% endif %}
+                    {{ (acc['error'] or '—')[:30] }}
                 </td>
                 <td class="actions">
                     <button class="btn btn-sm js-fetch-account" data-account-id="{{ acc['id'] }}">取件</button>
                     <a href="/account/{{ acc['id'] }}/edit-token" class="btn btn-sm btn-primary" title="更新 refresh_token">令牌</a>
-                    <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline">
+                    <form method="post" action="/account/{{ acc['id'] }}/toggle">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         {% if not acc['enabled'] %}
                             <input type="hidden" name="action" value="enable">
@@ -125,7 +166,7 @@
                             <button class="btn btn-sm btn-warn">禁用</button>
                         {% endif %}
                     </form>
-                    <form method="post" action="/account/{{ acc['id'] }}/toggle" style="display:inline"
+                    <form method="post" action="/account/{{ acc['id'] }}/toggle"
                           data-confirm="确定删除该账号及所有邮件？">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <input type="hidden" name="action" value="delete">
@@ -133,9 +174,12 @@
                     </form>
                 </td>
             </tr>
+        {% else %}
+            <tr><td colspan="11" class="empty"><div class="empty-icon">📭</div>暂无账号，点击右上角「导入账号」开始</td></tr>
         {% endfor %}
         </tbody>
     </table>
+    </div>
 
     {% if total_pages > 1 %}
     <div class="pagination">
@@ -145,5 +189,4 @@
     </div>
     {% endif %}
 </div>
-
 {% endblock %}

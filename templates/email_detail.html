@@ -1,25 +1,28 @@
 {% extends "base.html" %}
-{% block title %}{{ email['subject'] or '邮件详情' }}{% endblock %}
+{% block title %}{{ email['subject'] or '邮件详情' }} - Mail Manager{% endblock %}
 {% block content %}
+<div class="page-head">
+    <div>
+        <h1 style="font-size: 18px;">📩 {{ email['subject'] or '(无主题)' }}</h1>
+        <p class="page-sub">{{ email['from_addr'] }} · {{ email['date'] | fmt_dt }}</p>
+    </div>
+    <div class="page-actions">
+        <a href="/account/{{ email['account_id'] }}" class="btn">← 返回收件箱</a>
+    </div>
+</div>
+
 <div class="card">
-    <div class="card-header">
-        <h2>📩 邮件详情</h2>
-        <a href="/account/{{ email['account_id'] }}" class="btn">← 返回</a>
-    </div>
-
     <div class="email-meta">
-        <div><strong>发件人：</strong>{{ email['from_addr'] }}</div>
-        <div><strong>主　题：</strong>{{ email['subject'] or '(无主题)' }}</div>
-        <div><strong>时　间：</strong>{{ email['date'] | fmt_dt }}</div>
-        <div><strong>文件夹：</strong><span class="badge">{{ email['folder'] }}</span></div>
+        <strong>发件人</strong><span>{{ email['from_addr'] }}</span>
+        <strong>主题</strong><span>{{ email['subject'] or '(无主题)' }}</span>
+        <strong>时间</strong><span>{{ email['date'] | fmt_dt }}</span>
+        <strong>文件夹</strong><span><span class="badge">{{ email['folder'] }}</span></span>
     </div>
-
-    <hr>
 
     {% if email['body_html'] %}
     <div class="email-body-html">
         <iframe srcdoc="{{ email['body_html'] | e }}" sandbox="" referrerpolicy="no-referrer"
-                title="邮件 HTML 正文" style="width:100%;min-height:500px;border:1px solid #ddd;border-radius:4px;"></iframe>
+                title="邮件 HTML 正文" style="width:100%;min-height:520px;"></iframe>
     </div>
     {% elif email['body'] %}
     <div class="email-body-plain">

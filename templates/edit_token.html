@@ -1,29 +1,30 @@
 {% extends "base.html" %}
 {% block title %}更新令牌 - {{ account['email'] }}{% endblock %}
 {% block content %}
-<div class="page-header">
-    <h2>🔑 更新 Refresh Token - {{ account['email'] }}</h2>
+<div class="page-head">
+    <div>
+        <h1>更新 Refresh Token</h1>
+        <p class="page-sub">{{ account['email'] }} · 创建于 {{ account['token_created_at'] | fmt_dt if account['token_created_at'] else '未知' }}</p>
+    </div>
+    <div class="page-actions">
+        <a href="/" class="btn">返回</a>
+    </div>
 </div>
 
 {% if error %}
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
-<div class="card" style="max-width: 600px;">
-    <div class="account-info">
-        <span>📧 {{ account['email'] }}</span>
-        <span>创建于 {{ account['token_created_at'] | fmt_dt if account['token_created_at'] else '未知' }}</span>
-    </div>
-
-    <div class="info-box" style="background: rgba(33, 150, 243, 0.1); border: 1px solid #2196f3; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+<div class="card" style="max-width: 680px;">
+    <div class="info-box">
         <p><strong>什么时候需要更新？</strong></p>
-        <ul style="margin: 8px 0 0 20px; font-size: 13px;">
+        <ul>
             <li>上游验证失败或长期未成功刷新</li>
             <li>取件报错 "Token refresh failed"</li>
             <li>上游提供了新的授权码</li>
         </ul>
         <p style="margin-top: 8px;"><strong>自动续期：</strong>每次成功取件后，系统会自动保存返回的新令牌，无需手动更新。</p>
-        <p style="margin-top: 8px;"><strong>取件方式：</strong>在账号列表里用下拉菜单直接切换 Graph / IMAP。</p>
+        <p><strong>取件方式：</strong>在账号列表里用下拉菜单直接切换 Graph / IMAP。</p>
     </div>
 
     <form method="post" action="/account/{{ account['id'] }}/edit-token">
@@ -38,7 +39,7 @@
             <input type="text" name="account_proxy" value="{{ account.get('proxy', '') }}"
                    placeholder="socks5h://user:pass@host:port">
         </div>
-        <div style="display: flex; gap: 8px;">
+        <div style="display: flex; gap: 10px;">
             <button type="submit" class="btn btn-primary">保存</button>
             <a href="/" class="btn">取消</a>
         </div>

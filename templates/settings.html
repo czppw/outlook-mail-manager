@@ -1,8 +1,11 @@
 {% extends "base.html" %}
-{% block title %}全局设置{% endblock %}
+{% block title %}全局设置 - Mail Manager{% endblock %}
 {% block content %}
-<div class="page-header">
-    <h2>⚙️ 全局设置</h2>
+<div class="page-head">
+    <div>
+        <h1>全局设置</h1>
+        <p class="page-sub">代理、默认取件方式与自动健康检测</p>
+    </div>
 </div>
 
 {% if success %}
@@ -12,57 +15,72 @@
 <div class="alert alert-error">{{ error }}</div>
 {% endif %}
 
-<div class="card" style="max-width: 640px;">
-    <h3 style="margin-bottom: 12px;">🌐 中转代理</h3>
+<div class="card" style="max-width: 720px;">
     <form method="post" action="/settings">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <label>代理地址（全部账号的 token 刷新与取件都走这里；留空为直连）</label>
-            <input type="text" name="global_proxy" value="{{ global_proxy }}"
-                   placeholder="socks5://user:pass@host:port 或 http://host:port">
-            <p class="hint" style="margin-top: 4px;">
-                支持 socks5 / socks5h / socks4 / http 代理，保存后立即生效，无需重启。
-                {% if proxy_from_env %}<br>当前值来自环境变量 <code>OMM_PROXY</code>，在此保存后将以页面配置为准。{% endif %}
-            </p>
+
+        <div class="card-section">
+            <h3>🌐 中转代理</h3>
+            <div class="form-group">
+                <label>代理地址（全部账号的 token 刷新与取件都走这里；留空为直连）</label>
+                <input type="text" name="global_proxy" value="{{ global_proxy }}"
+                       placeholder="socks5://user:pass@host:port 或 http://host:port">
+                <p class="hint">
+                    支持 socks5 / socks5h / socks4 / http 代理，保存后立即生效，无需重启。
+                    {% if proxy_from_env %}<br>当前值来自环境变量 <code>OMM_PROXY</code>，在此保存后将以页面配置为准。{% endif %}
+                </p>
+            </div>
         </div>
 
-        <h3 style="margin: 20px 0 12px;">📡 新账号默认取件方式（仅 Microsoft）</h3>
-        <div class="form-group">
-            <label style="display:block; margin: 6px 0;">
-                <input type="radio" name="default_ms_fetch_mode" value="graph"
-                       {{ 'checked' if default_ms_fetch_mode == 'graph' else '' }}> Graph API（推荐，应对 MS IMAP 风控）
-            </label>
-            <label style="display:block; margin: 6px 0;">
-                <input type="radio" name="default_ms_fetch_mode" value="imap"
-                       {{ 'checked' if default_ms_fetch_mode == 'imap' else '' }}> IMAP（传统 XOAUTH2）
-            </label>
-            <p class="hint">只影响之后新导入的账号。</p>
+        <div class="card-section">
+            <h3>📡 新账号默认取件方式（仅 Microsoft）</h3>
+            <div class="form-group">
+                <label class="radio-card">
+                    <input type="radio" name="default_ms_fetch_mode" value="graph"
+                           {{ 'checked' if default_ms_fetch_mode == 'graph' else '' }}>
+                    <span>
+                        <span class="radio-title">Graph API</span>
+                        <span class="radio-desc">推荐，应对 MS IMAP 风控</span>
+                    </span>
+                </label>
+                <label class="radio-card">
+                    <input type="radio" name="default_ms_fetch_mode" value="imap"
+                           {{ 'checked' if default_ms_fetch_mode == 'imap' else '' }}>
+                    <span>
+                        <span class="radio-title">IMAP</span>
+                        <span class="radio-desc">传统 XOAUTH2 方式</span>
+                    </span>
+                </label>
+                <p class="hint">只影响之后新导入的账号。</p>
+            </div>
         </div>
 
-        <h3 style="margin: 20px 0 12px;">🩺 自动健康检测</h3>
-        <div class="form-group">
-            <label>每隔多少小时自动检测一次全部账号（0 = 关闭）</label>
-            <input type="text" name="auto_check_hours" value="{{ auto_check_hours }}" style="width: 120px;">
-            <p class="hint" style="margin-top: 4px;">
-                检测 = 小批量取件验证（每账号仅 1 封，几乎无流量）。失败的账号自动标记为「异常」，
-                在账号列表按状态筛选「异常」即可看到。令牌失效 / 邮箱被封 / 网络故障都能及时发现。
-                平时可以填 0 关闭，需要时在首页点「🩺 一键检测」手动验证账号池。
-            </p>
+        <div class="card-section">
+            <h3>🩺 自动健康检测</h3>
+            <div class="form-group">
+                <label>每隔多少小时自动检测一次全部账号（0 = 关闭）</label>
+                <input type="text" name="auto_check_hours" value="{{ auto_check_hours }}" style="width: 140px;">
+                <p class="hint">
+                    检测 = 小批量取件验证（每账号仅 1 封，几乎无流量）。失败的账号自动标记为「异常」，
+                    在账号列表按状态筛选「异常」即可看到。令牌失效 / 邮箱被封 / 网络故障都能及时发现。
+                    平时可以填 0 关闭，需要时在首页点「🩺 一键检测」手动验证账号池。
+                </p>
+            </div>
         </div>
 
         <button type="submit" class="btn btn-primary">保存设置</button>
     </form>
 </div>
 
-<div class="card" style="max-width: 640px;">
-    <h3 style="margin-bottom: 12px;">🔀 批量切换现有账号取件方式</h3>
+<div class="card" style="max-width: 720px;">
+    <h3>🔀 批量切换现有账号取件方式</h3>
     <form method="post" action="/accounts/bulk-fetch-mode"
           data-confirm="确定切换全部 Microsoft 账号的取件方式？">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
         <div class="form-group">
             <label>一键应用到所有现有 Microsoft 账号（个别账号仍可在列表里用下拉单独调整）</label>
-            <div style="display: flex; gap: 10px; align-items: center;">
-                <select name="fetch_mode" class="btn" style="padding: 8px;">
+            <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                <select name="fetch_mode" style="width: 220px;">
                     <option value="graph">Graph API（推荐）</option>
                     <option value="imap">IMAP</option>
                 </select>
@@ -72,12 +90,12 @@
     </form>
 </div>
 
-<div class="card" style="max-width: 640px;">
-    <h3 style="margin-bottom: 12px;">🔧 其他</h3>
+<div class="card" style="max-width: 720px;">
+    <h3>🔧 其他</h3>
     <div style="display: flex; gap: 10px; flex-wrap: wrap;">
         <a href="/password" class="btn">🔑 修改登录密码</a>
-        <button type="button" id="export-all" class="btn">导出全部账号</button>
+        <button type="button" id="export-all" class="btn btn-danger">导出全部账号（含明文令牌）</button>
     </div>
-    <p class="hint" style="margin-top: 10px;">导出格式与导入格式一致（<code>邮箱----密码----client_id----refresh_token</code>），含 refresh_token 明文，请妥善保管导出文件。</p>
+    <p class="hint">导出格式与导入格式一致（<code>邮箱----密码----client_id----refresh_token</code>），含 refresh_token 明文，请妥善保管导出文件。</p>
 </div>
 {% endblock %}

@@ -337,7 +337,8 @@ def _start_server(env: dict[str, str], base_url: str) -> subprocess.Popen:
             response = requests.get(base_url + "/healthz", timeout=1)
             if (
                 response.status_code == 200
-                and response.json().get("version") == "1.0.0"
+                and response.json().get("version")
+                == (REPO / "VERSION").read_text(encoding="ascii").strip()
             ):
                 return proc
         except (requests.RequestException, ValueError):

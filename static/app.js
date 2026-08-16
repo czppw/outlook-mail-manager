@@ -3,6 +3,20 @@
 
     const csrfToken = () => document.querySelector('meta[name="csrf-token"]')?.content || "";
 
+    function toast(message, type = "") {
+        let root = document.getElementById("toast-root");
+        if (!root) {
+            root = document.createElement("div");
+            root.id = "toast-root";
+            document.body.appendChild(root);
+        }
+        const item = document.createElement("div");
+        item.className = `toast ${type}`;
+        item.textContent = message;
+        root.appendChild(item);
+        setTimeout(() => item.remove(), 5000);
+    }
+
     async function request(url, options = {}) {
         const headers = new Headers(options.headers || {});
         if ((options.method || "GET").toUpperCase() !== "GET") {
@@ -24,15 +38,15 @@
         try {
             const data = await request(`/fetch/${id}`, {method: "POST"});
             if (data.partial) {
-                alert(`取件部分完成：已保存 ${data.fetched} 封邮件；${data.error}`);
+                toast(`取件部分完成：已保存 ${data.fetched} 封邮件；${data.error}`, "err");
             } else {
-                alert(data.fetched > 0
+                toast(data.fetched > 0
                     ? `取件完成：新增 ${data.fetched} 封邮件`
-                    : "取件完成：没有新邮件");
+                    : "取件完成：没有新邮件", "ok");
             }
-            location.reload();
+            setTimeout(() => location.reload(), 800);
         } catch (error) {
-            alert(`取件失败：${error.message}`);
+            toast(`取件失败：${error.message}`, "err");
             button.disabled = false;
             button.textContent = "取件";
         }
@@ -43,14 +57,15 @@
         button.textContent = healthCheck ? "检测中..." : "批量取件中...";
         try {
             const data = await request(healthCheck ? "/check-all" : "/fetch-all", {method: "POST"});
-            alert(healthCheck
+            toast(healthCheck
                 ? `健康检测完成\n可用: ${data.success} 个，异常: ${data.failed} 个`
-                : `批量取件完成\n成功: ${data.success} 个，失败: ${data.failed} 个，新增: ${data.total_emails} 封`);
-            location.reload();
+                : `批量取件完成\n成功: ${data.success} 个，失败: ${data.failed} 个，新增: ${data.total_emails} 封`,
+                data.failed > 0 ? "err" : "ok");
+            setTimeout(() => location.reload(), 1200);
         } catch (error) {
-            alert(`${healthCheck ? "检测" : "批量取件"}失败：${error.message}`);
+            toast(`${healthCheck ? "检测" : "批量取件"}失败：${error.message}`, "err");
             button.disabled = false;
-            button.textContent = healthCheck ? "一键检测" : "全部取件";
+            button.textContent = healthCheck ? "🩺 一键检测" : "⚡ 全部取件";
         }
     }
 
@@ -61,15 +76,16 @@
         try {
             await request(`/account/${select.dataset.accountId}/prefs`, {method: "POST", body: form});
             select.dataset.previous = select.value;
+            toast(`取件方式已切换为 ${select.value.toUpperCase()}`, "ok");
         } catch (error) {
-            alert(`切换失败：${error.message}`);
+            toast(`切换失败：${error.message}`, "err");
             select.value = select.dataset.previous;
         }
     }
 
     function submitExport(ids) {
         if (!ids.length) {
-            alert("请先选择账号");
+            toast("请先选择账号", "err");
             return;
         }
         const password = prompt("请输入当前管理员密码");
@@ -109,6 +125,10 @@
                 for (const message of data.emails) {
                     const row = document.createElement("tr");
                     const from = document.createElement("td");
+                    from.style.maxWidth = "260px";
+                    from.style.overflow = "hidden";
+                    from.style.textOverflow = "ellipsis";
+                    from.style.whiteSpace = "nowrap";
                     from.textContent = (message.from || "").slice(0, 50);
                     const subject = document.createElement("td");
                     const link = document.createElement("a");
@@ -116,6 +136,8 @@
                     link.textContent = (message.subject || "").slice(0, 80) || "(无主题)";
                     subject.appendChild(link);
                     const date = document.createElement("td");
+                    date.style.color = "var(--text-dim)";
+                    date.style.whiteSpace = "nowrap";
                     date.textContent = message.date || "-";
                     const folderCell = document.createElement("td");
                     const badge = document.createElement("span");
@@ -133,7 +155,7 @@
                     return;
                 }
             } catch (error) {
-                alert(`加载失败：${error.message}`);
+                toast(`加载失败：${error.message}`, "err");
             }
             button.disabled = false;
             button.textContent = "加载更多";
@@ -173,11 +195,12 @@
                 body: JSON.stringify({version: button.dataset.version}),
             });
             button.textContent = "正在重启...";
+            toast("更新已安装，服务正在重启，页面将在几秒后刷新...", "ok");
             setTimeout(() => location.reload(), 5000);
         } catch (error) {
-            alert(`更新失败：${error.message}`);
+            toast(`更新失败：${error.message}`, "err");
             button.disabled = false;
-            button.textContent = "更新";
+            button.textContent = "⬆ 安装新版本";
         }
     }
 
