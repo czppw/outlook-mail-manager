@@ -2,7 +2,7 @@
   "delete": [],
   "files": {
     "VERSION": {
-      "sha256": "7fbd210ebec11f65a97190ef900795c4b8da3805af3f5a1b8d1d272556b292ca",
+      "sha256": "9f77034b1eb57d24f21ac7deb65c9cc99f63b72775e311f1f280ab2b6c2e06a2",
       "size": 5
     },
     "app.py": {
@@ -42,59 +42,59 @@
       "size": 4103
     },
     "smoke_test.py": {
-      "sha256": "27496e6bb6348f873d199cc15911c499dc9f576bda37fc6c0057d44e3c089d74",
-      "size": 20749
+      "sha256": "d764be9391ab2c87ef7ca3f8559f4f60eaaab64410a28dd7e3693ab69be8532a",
+      "size": 20812
     },
     "static/app.js": {
-      "sha256": "743e7e475e0fa2b625a933d2380624ae2a3d6dab33e603767cd6763543649749",
-      "size": 9521
+      "sha256": "87fd56c7c72ba4686a4125f71e15e9733c3c6d0ec8876f20f47d2050bbea3a35",
+      "size": 10678
     },
     "static/style.css": {
-      "sha256": "82277ac9c4c4ff648a6e5a1cbe26b618eabe7772c272a9cae5446ccead574ef9",
-      "size": 8382
+      "sha256": "8ea0f4c14e7405eb6550f4517e47e29e9e3742a815f4cb2a5566936ce716b147",
+      "size": 21408
     },
     "templates/base.html": {
-      "sha256": "28afde7d1200b4604ffe5b765227bd6df7c6083a89333b0d40ae8a256a27cb01",
-      "size": 1446
+      "sha256": "aae17e5edc72af1e64a340453e08c121ceec80d5856af350a6e1b5bfaa6ce7f5",
+      "size": 4226
     },
     "templates/edit_token.html": {
-      "sha256": "b1619d0c1d1cceee38a2a030b8dce64b1009d2b1b3a2dfbe5ccfbcb979514431",
-      "size": 2200
+      "sha256": "ac90142da8b7e6f3588e2f7d3dc62baefbb424667eb1f18945ec2ddac83b4f39",
+      "size": 2024
     },
     "templates/email_detail.html": {
-      "sha256": "dae6a4eab37a1aec66254035db534cd0f7e72087aace249ef29d6b690abcb704",
-      "size": 1195
+      "sha256": "62e744b65fbfa1b5c3fb02bd04c8b02ee9370b292b67c1f2d0b48ac3ca0d91de",
+      "size": 1353
     },
     "templates/import.html": {
-      "sha256": "0653076d8c02b313ce8da3433e7aad605cbe7c0012c85936304f36b80f9ecfec",
-      "size": 1868
+      "sha256": "6b88bbd75917ee10675ecb4373a849a80f19c1aeebaa5ffd4b06cbde5b1f51e4",
+      "size": 2178
     },
     "templates/inbox.html": {
-      "sha256": "de1c9f39c69e0110a711fbf92f2d3d09db62fdce67f74d2a29064f9dbe381a20",
-      "size": 2635
+      "sha256": "b8ffab3414fa608979e831222e818d44a7d32f2f98f83ab65a4e90e915426892",
+      "size": 2960
     },
     "templates/index.html": {
-      "sha256": "46387afedfb37d153baee820950c1667ffc84eb81bb58b14f7e9e11f7bea770c",
-      "size": 8343
+      "sha256": "5968c3a6dd647c0037e23da0f2f047637cbf59d7069bb522759162302bbca980",
+      "size": 10470
     },
     "templates/login.html": {
-      "sha256": "e0294e6a21b920c001a0018c0a861ec7120cc789bb1af46fd0ff877167a48c82",
-      "size": 2082
+      "sha256": "905f97a47c7038e2804626c7c2771a88a8ab87d3ec6f6e5527bc92db6b460fd9",
+      "size": 1735
     },
     "templates/password.html": {
-      "sha256": "20baa0b7c618ed28d96a1b53c9083c601c2454e3030267f3839270951c7c6d39",
-      "size": 1015
+      "sha256": "3c8d79902ad4f47195f40762ab99ed8fdbd7f63897738a11d7d2fc87a770d415",
+      "size": 1222
     },
     "templates/settings.html": {
-      "sha256": "4144eb44da1c9e05acf13f0c05a4a7b5537d9a27765de18374c4749593b60034",
-      "size": 4337
+      "sha256": "ce325b97355bbf239a5c98458fe37d31d22adc6d3603404967ccf1eb76b7f852",
+      "size": 4843
     },
     "templates/tokens.html": {
-      "sha256": "13d56d19555e8e659bfc7abeceb64db350f6e5dd378187fcc4d9f33d79488d62",
-      "size": 3400
+      "sha256": "d5c67979d8c2a6f087a0d627ebf59b5b964f49d0a5bc73b23ffa9844bb0d3da8",
+      "size": 4326
     },
     "update_manager.py": {
-      "sha256": "320f5f55a1de6d3370d20cc9e926245582918362437cfd6a66b308ab8caf9b4e",
+      "sha256": "00e5b4e191383be44cc0e83f501d28026b7641447841dcaa7de4ebc347c5cc02",
       "size": 53817
     },
     "web_security.py": {
@@ -102,10 +102,10 @@
       "size": 5140
     }
   },
-  "release_version": "1.1.0",
+  "release_version": "1.2.0",
   "schema_version": 1,
   "signature": {
     "algorithm": "ed25519",
-    "value": "6mSIYkXepsXbjexsz2mnH4njhbJuSlHinfHUNkdCTnoM6Jth1ZBz+YLXQVsoh+tq400pg6lm1ohdlGa79me8Bw=="
+    "value": "TFSxVhAqhF19kVDA3efdemgZ9vhPKtDUimlHoq3p1gpnutZWwsF16S8T+t9iRwvX6F8fb3MRTinYUZa8gvQqBQ=="
   }
 }
