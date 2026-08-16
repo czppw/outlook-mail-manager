@@ -162,13 +162,17 @@
         });
     }
 
-    async function checkForUpdate() {
+    let updateBusy = false;
+
+    async function checkForUpdate(fresh = false) {
         const widget = document.getElementById("version-widget");
-        if (!widget) return;
+        if (!widget || updateBusy) return;
         const status = widget.querySelector(".version-status");
         const button = widget.querySelector(".version-update");
+        updateBusy = true;
         try {
-            const data = await request("/api/update/status");
+            const data = await request(`/api/update/status${fresh ? "?fresh=1" : ""}`);
+            widget.classList.remove("failed");
             if (!data.update_available) {
                 widget.classList.add("is-current");
                 status.textContent = "已是最新";
@@ -179,8 +183,11 @@
             button.hidden = false;
             button.dataset.version = data.latest_version;
         } catch (error) {
-            status.textContent = "检查失败";
+            widget.classList.add("failed");
+            status.textContent = "检查失败 · 点击重试";
             widget.title = error.message;
+        } finally {
+            updateBusy = false;
         }
     }
 
@@ -227,7 +234,11 @@
         document.getElementById("export-all")?.addEventListener("click", () => {
             submitExport(["all"]);
         });
-        document.querySelector(".version-update")?.addEventListener("click", (event) => applyUpdate(event.currentTarget));
+        document.getElementById("version-widget")?.addEventListener("click", () => checkForUpdate(true));
+        document.querySelector(".version-update")?.addEventListener("click", (event) => {
+            event.stopPropagation();
+            applyUpdate(event.currentTarget);
+        });
         initInbox();
         checkForUpdate();
     });

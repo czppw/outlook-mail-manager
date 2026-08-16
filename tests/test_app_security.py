@@ -198,8 +198,8 @@ def test_csrf_password_revocation_and_export_reauthentication(web_app):
 def test_update_endpoints_use_global_proxy_and_require_csrf(web_app, monkeypatch):
     calls = []
 
-    def fake_check(proxy):
-        calls.append(("check", proxy))
+    def fake_check(proxy, use_cache=True):
+        calls.append(("check", proxy, use_cache))
         return {
             "current_version": "1.0.0",
             "latest_version": "1.1.0",
@@ -239,7 +239,7 @@ def test_update_endpoints_use_global_proxy_and_require_csrf(web_app, monkeypatch
         status = client.get("/api/update/status")
         assert status.status_code == 200
         assert status.json()["update_available"] is True
-        assert calls[-1] == ("check", "socks5://127.0.0.1:1080")
+        assert calls[-1][:2] == ("check", "socks5://127.0.0.1:1080")
 
         missing_csrf = client.post("/api/update/apply", json={"version": "1.1.0"})
         assert missing_csrf.status_code == 403

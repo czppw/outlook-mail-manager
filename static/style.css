@@ -176,7 +176,11 @@ code {
     background: var(--surface);
     font-size: 11px;
     color: var(--text-faint);
+    cursor: pointer;
+    transition: border-color 0.15s;
 }
+
+.version-widget:hover { border-color: var(--border-strong); }
 
 .version-current { color: var(--text); font-weight: 700; font-size: 11.5px; }
 .version-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -185,6 +189,8 @@ code {
 .version-widget.is-current .version-status { color: var(--ok); }
 .version-widget.has-update { border-color: rgba(251, 191, 36, 0.45); }
 .version-widget.has-update .version-status { color: var(--warn); }
+.version-widget.failed { border-color: rgba(248, 113, 113, 0.45); }
+.version-widget.failed .version-status { color: var(--err); }
 
 .version-update {
     grid-column: 1 / -1;
@@ -792,6 +798,8 @@ input[type="radio"] { accent-color: var(--accent); margin-right: 8px; }
         padding: 8px 12px;
         overflow-x: auto;
         scrollbar-width: none;
+        background: #0d1118;
+        backdrop-filter: none;
     }
     .sidebar::-webkit-scrollbar { display: none; }
 
@@ -814,7 +822,27 @@ input[type="radio"] { accent-color: var(--accent); margin-right: 8px; }
         gap: 6px;
     }
 
-    .version-widget { display: none; }
+    /* Floating chip: update notices stay reachable on phones without
+       crowding the icon nav bar. Fixed positioning needs the sidebar's
+       backdrop-filter disabled above (it would clip fixed children). */
+    .version-widget {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        max-width: calc(100vw - 24px);
+        padding: 6px 10px;
+        font-size: 11px;
+        background: var(--surface-3);
+        box-shadow: var(--shadow-pop);
+        z-index: 900;
+    }
+    .version-current { flex-shrink: 0; }
+    .version-status { flex: 1; min-width: 0; }
+    .version-widget.has-update .version-status { display: none; }
+    .version-update { flex-shrink: 0; }
     .side-logout { width: auto; padding: 9px; }
     .side-logout .nav-label { display: none; }
 
@@ -846,7 +874,8 @@ input[type="radio"] { accent-color: var(--accent); margin-right: 8px; }
 
     .email-meta { grid-template-columns: 64px 1fr; }
 
-    #toast-root { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+    /* Keep toasts clear of the floating version chip (bottom-left). */
+    #toast-root { left: auto; right: 12px; bottom: 58px; max-width: calc(100vw - 24px); }
 
     .login-card { padding: 30px 24px 26px; }
 }

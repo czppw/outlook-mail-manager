@@ -41,7 +41,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SESSION_COOKIE = "omm_session"
 SESSION_MAX_AGE = 7 * 24 * 60 * 60
 FETCH_CONCURRENCY = _env_int("OMM_FETCH_CONCURRENCY", 5, 1, 20)
-UPDATE_STATUS_TTL = 3600.0
+UPDATE_STATUS_TTL = 600.0
 MAX_IMPORT_LINES = 10_000
 MAX_REQUEST_BYTES = int(os.environ.get("OMM_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
 SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "1").strip().lower() not in {
@@ -1069,15 +1069,21 @@ _update_status_cache: dict[str, object] = {"checked_at": 0.0, "payload": None}
 
 
 @app.get("/api/update/status")
-async def update_status():
-    """Serve the cached release check; every page load used to hit GitHub."""
+async def update_status(fresh: int = 0):
+    """Serve the cached release check; `fresh=1` bypasses every cache layer."""
     now = time.monotonic()
     payload = _update_status_cache["payload"]
-    if payload is not None and now - _update_status_cache["checked_at"] < UPDATE_STATUS_TTL:
+    if (
+        not fresh
+        and payload is not None
+        and now - _update_status_cache["checked_at"] < UPDATE_STATUS_TTL
+    ):
         return payload
     try:
         payload = await asyncio.to_thread(
-            update_manager.check_for_update, await _global_proxy()
+            update_manager.check_for_update,
+            await _global_proxy(),
+            use_cache=not fresh,
         )
     except update_manager.UpdateError as exc:
         return JSONResponse({"error": str(exc)}, status_code=502)
