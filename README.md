@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/czppw/outlook-mail-manager/main/templates/base.html" alt="" width="0" height="0" />
-  <strong>批量管理 Outlook / Hotmail / Gmail 邮箱 · OAuth2 免密取件 · 自动续期 Token · 全新现代化高颜值 UI</strong>
+  <strong>批量管理 Outlook / Hotmail / Gmail 邮箱 · OAuth2 免密取件 · 自动续期 Token </strong>
 </p>
 
 <p align="center">
