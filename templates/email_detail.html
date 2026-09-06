@@ -2,34 +2,54 @@
 {% block title %}{{ email['subject'] or '邮件详情' }} - Mail Manager{% endblock %}
 {% block content %}
 <div class="page-head">
-    <div>
-        <h1 style="font-size: 18px;">📩 {{ email['subject'] or '(无主题)' }}</h1>
-        <p class="page-sub">{{ email['from_addr'] }} · {{ email['date'] | fmt_dt }}</p>
+    <div class="page-title-group" style="max-width: 85%;">
+        <h1>
+            <span style="color: var(--accent-light); font-size: 1.3rem;">📩</span>
+            <span>{{ email['subject'] or '(无主题)' }}</span>
+        </h1>
+        <p class="page-sub">
+            <span>发件人：<strong>{{ email['from_addr'] }}</strong></span>
+            <span>·</span>
+            <span>接收于 {{ email['date'] | fmt_dt }}</span>
+        </p>
     </div>
     <div class="page-actions">
-        <a href="/account/{{ email['account_id'] }}" class="btn">← 返回收件箱</a>
+        <a href="/account/{{ email['account_id'] }}" class="btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            返回收件箱
+        </a>
     </div>
 </div>
 
 <div class="card">
     <div class="email-meta">
-        <strong>发件人</strong><span>{{ email['from_addr'] }}</span>
-        <strong>主题</strong><span>{{ email['subject'] or '(无主题)' }}</span>
-        <strong>时间</strong><span>{{ email['date'] | fmt_dt }}</span>
-        <strong>文件夹</strong><span><span class="badge">{{ email['folder'] }}</span></span>
+        <strong>发件人</strong>
+        <span style="font-weight: 550; color: var(--text-main);">{{ email['from_addr'] }}</span>
+
+        <strong>主　题</strong>
+        <span style="font-weight: 600; color: var(--text-main);">{{ email['subject'] or '(无主题)' }}</span>
+
+        <strong>时　间</strong>
+        <span style="color: var(--text-muted);">{{ email['date'] | fmt_dt }}</span>
+
+        <strong>文　件</strong>
+        <span><span class="badge">{{ email['folder'] }}</span></span>
     </div>
 
     {% if email['body_html'] %}
     <div class="email-body-html">
         <iframe srcdoc="{{ email['body_html'] | e }}" sandbox="" referrerpolicy="no-referrer"
-                title="邮件 HTML 正文" style="width:100%;min-height:520px;"></iframe>
+                title="邮件 HTML 正文" style="width: 100%; min-height: 560px; border: 1px solid var(--border-strong); border-radius: var(--radius-md);"></iframe>
     </div>
     {% elif email['body'] %}
     <div class="email-body-plain">
         <pre>{{ email['body'] }}</pre>
     </div>
     {% else %}
-    <p class="empty">（无邮件内容）</p>
+    <div class="empty">
+        <div class="empty-icon">📄</div>
+        <p>（该邮件未包含正文内容）</p>
+    </div>
     {% endif %}
 </div>
 {% endblock %}

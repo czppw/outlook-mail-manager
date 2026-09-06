@@ -44,10 +44,10 @@ FETCH_CONCURRENCY = _env_int("OMM_FETCH_CONCURRENCY", 5, 1, 20)
 UPDATE_STATUS_TTL = 600.0
 MAX_IMPORT_LINES = 10_000
 MAX_REQUEST_BYTES = int(os.environ.get("OMM_MAX_REQUEST_BYTES", str(2 * 1024 * 1024)))
-SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "1").strip().lower() not in {
-    "0",
-    "false",
-    "no",
+SECURE_COOKIE = os.environ.get("OMM_SECURE_COOKIE", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
 }
 CHECK_ORIGIN = os.environ.get("OMM_CHECK_ORIGIN", "1").strip().lower() not in {
     "0",
@@ -261,11 +261,22 @@ def _origin_allowed(request: Request) -> bool:
         return True
     canonical = _canonical_origin(origin)
     if canonical is None:
+        logger.warning("Origin rejected: invalid canonical origin from %s", origin)
         return False
 
     host = request.headers.get("host", "").strip()
     same_origin = _canonical_origin(f"{canonical[0]}://{host}")
-    return canonical == same_origin or canonical in _configured_origins()
+    if canonical == same_origin or canonical in _configured_origins():
+        return True
+
+    # Allow interchangeable loopback origins (localhost / 127.0.0.1 / ::1) on matching port
+    if same_origin and canonical[0] == same_origin[0] and canonical[2] == same_origin[2]:
+        loopback = {"localhost", "127.0.0.1", "::1"}
+        if canonical[1] in loopback and same_origin[1] in loopback:
+            return True
+
+    logger.warning("Origin rejected: origin=%s, host=%s, canonical=%s, same_origin=%s", origin, host, canonical, same_origin)
+    return False
 
 
 @app.middleware("http")

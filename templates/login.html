@@ -1,9 +1,17 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>登录 - Mail Manager</title>
+    <script>
+        (function() {
+            try {
+                var t = localStorage.getItem('omm_theme') || 'dark';
+                document.documentElement.dataset.theme = t;
+            } catch (e) {}
+        })();
+    </script>
     <link rel="stylesheet" href="/static/style.css?v={{ current_version }}">
 </head>
 <body>
@@ -11,31 +19,44 @@
     <div class="login-card">
         <div class="login-brand">
             <span class="brand-mark" aria-hidden="true">
-                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="16" x="2" y="4" rx="3"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
             </span>
             <div>
                 <div class="login-title">Mail Manager</div>
-                <div class="login-sub">OAuth2 邮箱账号管理平台</div>
+                <div class="login-sub">企业级 OAuth2 邮箱账号管理系统</div>
             </div>
         </div>
 
         {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
+        <div class="alert alert-error">
+            <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+            <span>{{ error }}</span>
+        </div>
         {% endif %}
         {% if changed %}
-        <div class="alert alert-success">密码已修改，请使用新密码重新登录</div>
+        <div class="alert alert-success">
+            <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+            <span>密码修改成功，请使用新密码重新登录</span>
+        </div>
         {% endif %}
 
         <form method="post" action="/login">
             <div class="form-group">
-                <label>用户名</label>
-                <input type="text" name="username" required autofocus placeholder="admin" autocomplete="username">
+                <label>管理员账号</label>
+                <input type="text" name="username" value="admin" required autofocus placeholder="admin" autocomplete="username">
             </div>
             <div class="form-group">
-                <label>密码</label>
-                <input type="password" name="password" required placeholder="请输入密码" autocomplete="current-password">
+                <label>访问密码</label>
+                <input type="password" name="password" required placeholder="请输入登录密码（默认 admin123）" autocomplete="current-password">
             </div>
-            <button type="submit" class="btn btn-primary btn-block">登 录</button>
+            <div style="margin-top: 24px;">
+                <button type="submit" class="btn btn-primary btn-block" style="padding: 11px; font-size: 1rem;">
+                    安全登 录
+                </button>
+            </div>
+            <div class="hint" style="text-align: center; margin-top: 16px; font-size: 0.82rem;">
+                💡 初始用户名：<code>admin</code>，默认密码：<code>admin123</code>
+            </div>
         </form>
     </div>
 </div>

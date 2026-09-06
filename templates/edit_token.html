@@ -2,46 +2,63 @@
 {% block title %}更新令牌 - {{ account['email'] }}{% endblock %}
 {% block content %}
 <div class="page-head">
-    <div>
+    <div class="page-title-group">
         <h1>更新 Refresh Token</h1>
-        <p class="page-sub">{{ account['email'] }} · 创建于 {{ account['token_created_at'] | fmt_dt if account['token_created_at'] else '未知' }}</p>
+        <p class="page-sub">
+            <span>邮箱：<strong>{{ account['email'] }}</strong></span>
+            <span>·</span>
+            <span>令牌初次生成于 {{ account['token_created_at'] | fmt_dt if account['token_created_at'] else '未知' }}</span>
+        </p>
     </div>
     <div class="page-actions">
-        <a href="/" class="btn">返回</a>
+        <a href="/" class="btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            返回总览
+        </a>
     </div>
 </div>
 
 {% if error %}
-<div class="alert alert-error">{{ error }}</div>
+<div class="alert alert-error">
+    <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+    <span>{{ error }}</span>
+</div>
 {% endif %}
 
-<div class="card" style="max-width: 680px;">
+<div class="card" style="max-width: 720px;">
     <div class="info-box">
-        <p><strong>什么时候需要更新？</strong></p>
+        <p><strong>何时需要手动更新 Refresh Token？</strong></p>
         <ul>
-            <li>上游验证失败或长期未成功刷新</li>
-            <li>取件报错 "Token refresh failed"</li>
-            <li>上游提供了新的授权码</li>
+            <li>账号取件报错 <code>Token refresh failed</code> 或 <code>invalid_grant</code></li>
+            <li>超过有效周期未取件导致上游授权被吊销</li>
+            <li>从服务商处重新申请获取了新的授权码</li>
         </ul>
-        <p style="margin-top: 8px;"><strong>自动续期：</strong>每次成功取件后，系统会自动保存返回的新令牌，无需手动更新。</p>
-        <p><strong>取件方式：</strong>在账号列表里用下拉菜单直接切换 Graph / IMAP。</p>
+        <p style="margin-top: 8px;">
+            💡 <strong>自动续期：</strong>在日常使用中，只要成功取件，系统会自动保存上游签发的新令牌，通常无需人工干预。
+        </p>
     </div>
 
     <form method="post" action="/account/{{ account['id'] }}/edit-token">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        
         <div class="form-group">
-            <label>新的 Refresh Token（授权码）</label>
-            <textarea name="new_refresh_token" rows="4"
-                      placeholder="不更换令牌时可留空"></textarea>
+            <label>新 Refresh Token（授权凭据）</label>
+            <textarea name="new_refresh_token" rows="5"
+                      placeholder="仅在需要更换凭据时填写，若仅修改代理可留空"></textarea>
         </div>
+        
         <div class="form-group">
-            <label>账号专用代理（留空使用全局代理）</label>
+            <label>此账号专属网络代理（留空则默认走全局网络代理）</label>
             <input type="text" name="account_proxy" value="{{ account.get('proxy', '') }}"
-                   placeholder="socks5h://user:pass@host:port">
+                   placeholder="例如 socks5h://user:pass@127.0.0.1:1080">
         </div>
-        <div style="display: flex; gap: 10px;">
-            <button type="submit" class="btn btn-primary">保存</button>
-            <a href="/" class="btn">取消</a>
+
+        <div style="display: flex; gap: 12px; margin-top: 24px;">
+            <button type="submit" class="btn btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                保存更新
+            </button>
+            <a href="/" class="btn">取消返回</a>
         </div>
     </form>
 </div>

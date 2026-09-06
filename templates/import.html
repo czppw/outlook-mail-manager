@@ -2,27 +2,40 @@
 {% block title %}导入账号 - Mail Manager{% endblock %}
 {% block content %}
 <div class="page-head">
-    <div>
-        <h1>导入账号</h1>
-        <p class="page-sub">批量导入 OAuth2 邮箱账号，重复导入只更新凭据</p>
+    <div class="page-title-group">
+        <h1>批量导入账号</h1>
+        <p class="page-sub">批量导入 OAuth2 邮箱账号，重复导入同一邮箱将自动更新凭据并保留历史邮件</p>
+    </div>
+    <div class="page-actions">
+        <a href="/" class="btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            返回总览
+        </a>
     </div>
 </div>
 
-<div class="card" style="max-width: 860px;">
+<div class="card" style="max-width: 880px;">
     {% if error %}
-    <div class="alert alert-error">{{ error }}</div>
+    <div class="alert alert-error">
+        <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+        <span>{{ error }}</span>
+    </div>
     {% endif %}
 
     {% if result %}
     <div class="alert alert-success">
-        <div>
-            ✅ 新增 <strong>{{ result.added }}</strong> 个，更新 <strong>{{ result.updated }}</strong> 个，失败 <strong>{{ result.failed }}</strong> 个
+        <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        <div style="flex: 1;">
+            <div>
+                <strong>导入完成：</strong>
+                新增 <strong>{{ result.added }}</strong> 个，更新 <strong>{{ result.updated }}</strong> 个，失败 <strong style="color: var(--danger-text);">{{ result.failed }}</strong> 个
+            </div>
             {% if result.errors %}
-            <ul>
+            <ul style="margin-top: 6px; font-size: 0.85rem;">
             {% for e in result.errors[:10] %}
                 <li>{{ e }}</li>
             {% endfor %}
-            {% if result.errors|length > 10 %}<li>...还有 {{ result.errors|length - 10 }} 条错误</li>{% endif %}
+            {% if result.errors|length > 10 %}<li>...以及其余 {{ result.errors|length - 10 }} 条异常记录</li>{% endif %}
             </ul>
             {% endif %}
         </div>
@@ -30,27 +43,38 @@
     {% endif %}
 
     <div class="info-box">
-        <p>格式：每行一个账号，用 <code>----</code> 分隔</p>
-        <p><code>邮箱----密码----client_id----refresh_token</code></p>
-        <p>Gmail 账号的「密码」字段填 <code>client_secret</code>。重复导入同一邮箱只会更新凭据，历史邮件和状态保留。</p>
+        <p><strong>导入格式规范：</strong>每行一个账号，各字段以 <code>----</code>（四个减号）分隔：</p>
+        <p style="margin-top: 6px;"><code>邮箱----密码----client_id----refresh_token</code></p>
+        <p style="margin-top: 6px; font-size: 0.85rem; color: var(--text-muted);">
+            💡 说明：对于 Gmail 账号，「密码」字段请填入 <code>client_secret</code>。已存在的邮箱重复导入会自动刷新授权凭据，不会产生重复脏数据。
+        </p>
     </div>
 
     <form method="post" enctype="multipart/form-data">
         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        
         <div class="form-group">
-            <label>粘贴账号（每行一个）</label>
-            <textarea name="text" rows="10" placeholder="email1@outlook.com----pass1----client_id1----refresh_token1
+            <label>方式一：直接粘贴账号数据（每行一个）</label>
+            <textarea name="text" rows="8" placeholder="email1@outlook.com----pass1----client_id1----refresh_token1
 email2@outlook.com----pass2----client_id2----refresh_token2"></textarea>
         </div>
 
         <div class="form-group">
-            <label>或上传文件（.txt / .csv）</label>
-            <input type="file" name="file" accept=".txt,.csv">
+            <label>方式二：上传本地数据文件（支持 .txt / .csv）</label>
+            <div class="upload-dropzone" style="border: 2px dashed var(--border-strong); border-radius: var(--radius-md); padding: 26px 20px; text-align: center; background: var(--surface-card-subtle); cursor: pointer; transition: all 0.2s ease; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;">
+                <input type="file" name="file" accept=".txt,.csv" style="display: none;">
+                <svg class="upload-icon" width="36" height="36" style="width: 36px; height: 36px; max-width: 36px; max-height: 36px; color: var(--accent-light); margin: 0 auto;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <div class="upload-title" style="font-weight: 600; font-size: 0.95rem; color: var(--text-main);">点击选择文件，或将文本文件拖拽至此处</div>
+                <div class="upload-sub" style="font-size: 0.82rem; color: var(--text-muted);">支持单行分隔符格式的 TXT 与 CSV 文件</div>
+            </div>
         </div>
 
-        <div style="display: flex; gap: 10px;">
-            <button type="submit" class="btn btn-primary">导入账号</button>
-            <a href="/" class="btn">返回</a>
+        <div style="display: flex; gap: 12px; margin-top: 24px;">
+            <button type="submit" class="btn btn-primary">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                开始解析并导入
+            </button>
+            <a href="/" class="btn">取消返回</a>
         </div>
     </form>
 </div>

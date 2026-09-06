@@ -2,65 +2,101 @@
 {% block title %}{{ account['email'] }} - 收件箱{% endblock %}
 {% block content %}
 <div class="page-head">
-    <div>
-        <h1 style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            {{ account['email'] }}
+    <div class="page-title-group">
+        <h1>
+            <span style="font-family: var(--mono); font-size: 1.45rem;">{{ account['email'] }}</span>
             {% if account.get('provider') == 'microsoft' and account.get('fetch_mode') == 'graph' %}
-                <span class="badge badge-ms">Graph</span>
+                <span class="badge badge-ms">Graph API</span>
             {% else %}
                 <span class="badge">IMAP</span>
             {% endif %}
-            <span class="badge badge-{{ account['status'] }}">{{ account['status'] }}</span>
+            <span class="badge badge-{{ account['status'] }}">
+                <span class="badge-dot"></span>
+                {{ '正常' if account['status'] == 'active' else ('异常' if account['status'] == 'error' else ('已禁用' if account['status'] == 'disabled' else account['status'])) }}
+            </span>
         </h1>
         <p class="page-sub">
-            邮件 {{ account['mail_count'] or 0 }} 封 · 上次取件 {{ account['last_check'] | fmt_dt if account['last_check'] else '未取件' }}
+            <span>收录邮件 <strong>{{ account['mail_count'] or 0 }}</strong> 封</span>
+            <span>·</span>
+            <span>上次取件：{{ account['last_check'] | fmt_dt if account['last_check'] else '尚未取件' }}</span>
         </p>
     </div>
     <div class="page-actions">
-        <button class="btn btn-primary js-fetch-account" data-account-id="{{ account['id'] }}">⚡ 取件</button>
-        <a href="/" class="btn">返回</a>
+        <button type="button" class="btn btn-primary js-fetch-account" data-account-id="{{ account['id'] }}">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+            立即取件
+        </button>
+        <a href="/" class="btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            返回总览
+        </a>
     </div>
 </div>
 
 <div class="card">
     <div class="folder-tabs">
-        <a href="/account/{{ account['id'] }}" class="tab {{ 'active' if not folder else '' }}">全部</a>
-        <a href="/account/{{ account['id'] }}?folder=INBOX" class="tab {{ 'active' if folder == 'INBOX' else '' }}">📥 收件箱</a>
-        <a href="/account/{{ account['id'] }}?folder=JUNK" class="tab {{ 'active' if folder == 'JUNK' else '' }}">🗑️ 垃圾邮件</a>
+        <a href="/account/{{ account['id'] }}" class="tab {{ 'active' if not folder else '' }}">全部邮件</a>
+        <a href="/account/{{ account['id'] }}?folder=INBOX" class="tab {{ 'active' if folder == 'INBOX' else '' }}">
+            📥 收件箱
+        </a>
+        <a href="/account/{{ account['id'] }}?folder=JUNK" class="tab {{ 'active' if folder == 'JUNK' else '' }}">
+            🗑️ 垃圾箱 / 推广
+        </a>
     </div>
 
     <div class="table-wrap">
     <table>
         <thead>
             <tr>
-                <th>发件人</th>
+                <th style="width: 280px;">发件人</th>
                 <th>主题</th>
-                <th>时间</th>
-                <th>文件夹</th>
+                <th style="width: 170px;">接收时间</th>
+                <th style="width: 100px;">文件夹</th>
             </tr>
         </thead>
         <tbody id="mail-tbody">
         {% for em in emails %}
             <tr>
-                <td style="max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">{{ em['from_addr'][:50] }}</td>
-                <td><a href="/email/{{ em['id'] }}">{{ em['subject'][:80] or '(无主题)' }}</a></td>
-                <td style="color: var(--text-dim); white-space: nowrap;">{{ em['date'] | fmt_dt }}</td>
-                <td><span class="badge">{{ em['folder'] }}</span></td>
+                <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                    <span class="sender-avatar">{{ (em['from_addr'] or '?')[0] | upper }}</span>
+                    <span title="{{ em['from_addr'] }}">{{ em['from_addr'][:50] }}</span>
+                </td>
+                <td>
+                    <a href="/email/{{ em['id'] }}" style="font-weight: 550;">
+                        {{ em['subject'][:80] or '(无主题)' }}
+                    </a>
+                </td>
+                <td style="color: var(--text-muted); white-space: nowrap; font-size: 0.86rem;">
+                    {{ em['date'] | fmt_dt }}
+                </td>
+                <td>
+                    <span class="badge">{{ em['folder'] }}</span>
+                </td>
             </tr>
         {% else %}
-            <tr id="empty-row"><td colspan="4" class="empty"><div class="empty-icon">📭</div>暂无邮件，点击右上角「取件」按钮获取</td></tr>
+            <tr id="empty-row">
+                <td colspan="4" class="empty">
+                    <div class="empty-icon">📭</div>
+                    <div style="font-size: 1.05rem; font-weight: 600; color: var(--text-main); margin-bottom: 6px;">暂无本地邮件记录</div>
+                    <div style="color: var(--text-muted); margin-bottom: 16px;">点击右上角「立即取件」开始同步邮件</div>
+                    <button type="button" class="btn btn-primary btn-sm js-fetch-account" data-account-id="{{ account['id'] }}">
+                        ⚡ 立即取件
+                    </button>
+                </td>
+            </tr>
         {% endfor %}
         </tbody>
     </table>
     </div>
 
-    <div class="pagination" style="margin-top: 16px;">
-        <span id="page-info">已加载 {{ emails|length }} / {{ total }} 封</span>
+    <div class="pagination" style="margin-top: 20px;">
+        <span id="page-info" style="font-weight: 500;">已加载 {{ emails|length }} / {{ total }} 封</span>
         {% if total_pages > page %}
             <button id="load-more-btn" class="btn btn-sm">加载更多 ↓</button>
         {% endif %}
     </div>
 </div>
+
 <div id="inbox-state" hidden
      data-account-id="{{ account['id'] }}"
      data-folder="{{ folder }}"

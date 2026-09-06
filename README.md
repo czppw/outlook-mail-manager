@@ -1,187 +1,198 @@
 # Outlook Mail Manager
 
-面向 Outlook/Hotmail/Gmail OAuth2 账号的自托管管理工具，提供账号导入、Graph/IMAP 取件、令牌状态、代理配置、邮件查看和签名自动更新。
+<p align="center">
+  <img src="https://raw.githubusercontent.com/czppw/outlook-mail-manager/main/templates/base.html" alt="" width="0" height="0" />
+  <strong>批量管理 Outlook / Hotmail / Gmail 邮箱 · OAuth2 免密取件 · 自动续期 Token · 全新现代化高颜值 UI</strong>
+</p>
 
-## 主要功能
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white" alt="Python Version" />
+  <img src="https://img.shields.io/badge/FastAPI-Modern_UI-009688?logo=fastapi&logoColor=white" alt="FastAPI" />
+  <img src="https://img.shields.io/badge/Theme-Dark%20%26%20Light-6366F1" alt="Dual Theme" />
+  <img src="https://img.shields.io/badge/Version-v1.3.0-blue" alt="Version" />
+  <img src="https://img.shields.io/badge/Security-Fernet_Encrypted-success" alt="Security" />
+</p>
 
-- Microsoft Graph API 与 IMAP XOAUTH2 双模式取件。
-- Gmail IMAP OAuth2 取件。
-- 全局 HTTP/SOCKS 代理及账号专用代理；账号代理优先。
-- 批量导入、筛选、健康检测、令牌轮换和稳定 UID 去重。
-- 服务端会话、CSRF、登录限速、scrypt 密码哈希和凭据加密。
-- 邮件 HTML 清洗、沙箱 iframe、CSP 和远程内容阻断。
-- 登录后检查 GitHub Release；有新版本时可在页面一键更新。
+---
 
-## 快速运行
+面向 Outlook / Hotmail / Gmail 账号的现代化轻量级自托管管理面板。支持批量导入、Graph API REST / IMAP XOAUTH2 双模式高效取件、令牌时效健康监控、全局与单账号网络代理、邮件阅读清洗与安全沙盒隔离。
 
-需要 Python 3.11 或更高版本。未设置环境变量时，首次登录用户名为 `admin`、密码为 `admin123`；部署完成后应立即在设置页修改密码。
+---
 
-### Linux/macOS
+## ✨ v1.3.0 前端重构亮点
 
+- 🎨 **Linear / Vercel 级设计美学**：彻底重构全套界面，告别简陋暗沉，采用科技感太空灰蓝与微光环境渐变。
+- 🌓 **深色 (Dark) / 浅色 (Light) 双主题**：侧边栏一键自由切换，基于 CSS 变量自适应，首屏防闪烁，支持持久化记忆。
+- 💡 **全新交互与组件**：
+  - **内嵌毛玻璃模态框**：彻底替代原生粗糙的 `prompt()` / `confirm()`，删除确认、凭据导出密码二次验证体验丝滑。
+  - **悬浮批量操作栏 (Floating Batch Bar)**：在表格中勾选多个账号时，底部自动升起毛玻璃工具栏，支持一键批量导出凭据。
+  - **一键快捷复制**：表格邮箱旁配有即时复制按钮与气泡提示。
+  - **呼吸指示灯与旋转加载器**：活跃账号呼吸微动效，取件、检测动作均配备平滑 Spinner。
+  - **发件人色彩头像**：收件箱根据发件人首字母自动生成品牌色彩头像胶囊。
+- 🛡️ **100% 离线自包含 & CSP 安全合规**：零第三方外部 CDN、零外部字体依赖，严格遵循后端极高强度的 Content Security Policy。
+
+---
+
+## 🚀 快速开始
+
+本项目依赖 **Python 3.11** 或更高版本。
+
+> [!IMPORTANT]
+> **默认登录账号与密码**：
+> - 登录地址：`http://127.0.0.1:8899`
+> - 默认用户名：`admin`
+> - 默认初始密码：`admin123`
+> *(首次登录后建议立即在「全局设置」中修改访问密码)*
+
+### 1. 克隆项目与安装依赖
+
+```bash
+git clone https://github.com/czppw/outlook-mail-manager.git
+cd outlook-mail-manager
+```
+
+### 2. 启动服务
+
+#### Windows (PowerShell)
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+pip install --require-hashes -r requirements.lock
+
+# 启动服务（默认监听 http://127.0.0.1:8899）
+python app.py
+```
+
+#### Linux / macOS
 ```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install --require-hashes -r requirements.lock
 
-# 可选：覆盖新数据库的默认初始密码
-export OMM_ADMIN_PASSWORD='replace-with-a-long-random-password'
-export OMM_SECRET_KEY_FILE="$PWD/secret.key"
-export OMM_SECURE_COOKIE=0  # 仅限本机 HTTP 调试
-python app.py
+# 启动服务（默认监听 http://127.0.0.1:8899）
+python3 app.py
 ```
 
-### Windows PowerShell
+在浏览器中打开 **http://127.0.0.1:8899**，使用 `admin` / `admin123` 登录即可体验。
 
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-python -m pip install --require-hashes -r requirements.lock
+---
 
-# 可选：覆盖新数据库的默认初始密码
-$env:OMM_ADMIN_PASSWORD = 'replace-with-a-long-random-password'
-$env:OMM_SECRET_KEY_FILE = "$PWD\secret.key"
-$env:OMM_SECURE_COOKIE = '0'  # 仅限本机 HTTP 调试
-python app.py
-```
+## 📦 核心功能特性
 
-本机访问 `http://127.0.0.1:8899`，用户名为 `admin`。
+### 1. 双协议取件 (Graph API & IMAP)
+- **Microsoft Graph API**（官方推荐）：采用微软最新的 REST API 读取邮件，完全免受传统 IMAP 端口的风控限制。
+- **IMAP XOAUTH2**：支持经典 XOAUTH2 认证协议，完美兼容各类自建租户。
+- **Gmail IMAP OAuth2**：支持 Google 邮箱的 OAuth2 授权收信。
 
-`OMM_ADMIN_PASSWORD` 仅在新建数据库时用于初始化。未设置时使用兼容默认值 `admin123`；数据库已有管理员哈希后，环境变量不会覆盖现有密码。页面修改的新密码至少 8 位，且必须同时包含英文字母和数字。
+### 2. 令牌自动续期与时效巡检
+- **自动延期**：每次成功取件后，系统自动提取上游签发的新 Refresh Token 并加密落库。
+- **时效监控看板**：实时诊断即将过期（默认 30 天内）与已过期的账号，支持一键向上游服务器验证令牌连通性。
 
-## 导入格式
+### 3. 全局与独立代理
+- 设置页支持配置全局中转代理（支持 `socks5` / `socks5h` / `socks4` / `http`），无需重启即时生效。
+- 单独账号可指定专属代理节点，专属代理优先级高于全局代理。
 
-每行一个账号，使用四个连字符分隔：
+### 4. 数据安全与隐私防护
+- **敏感凭据高强度加密**：Refresh Token、密码与代理地址通过 Fernet 对称加密落盘存储。
+- **邮件安全沙盒**：邮件正文经过 HTML 深度净化，采用隔离沙箱 `iframe` 渲染，阻断跟踪像素与恶意脚本执行。
+- **防爆破与防跨站攻击**：内置 IP 登录限速（5 次错误自动锁定）、CSRF 校验与 Origin 来源防护。
+
+---
+
+## 📥 账号导入格式说明
+
+支持在「导入账号」页面**直接粘贴**或**拖拽上传 TXT/CSV 文件**，每行一个账号，各字段以 `----`（四个减号）分隔：
 
 ```text
-邮箱----第二字段----client_id----refresh_token
+邮箱----密码/Secret----client_id----refresh_token
 ```
 
-- Microsoft：第二字段已不保存，可留空；Graph 模式要求 refresh token 具有 `Mail.Read` 权限。
-- Gmail：第二字段填写 OAuth2 应用的 `client_secret`。
-- 邮箱地址会转为小写；重复导入只更新凭据，保留账号 ID、状态和历史邮件。
+- **Microsoft 账号**：第二字段（密码）在 OAuth2 模式下可留空；需确保 Refresh Token 拥有 `Mail.Read` 或 `IMAP.AccessAsUser.All` 权限。
+- **Gmail 账号**：第二字段填入 OAuth2 应用的 `client_secret`。
+- **增量去重**：重复导入相同邮箱只会安全更新凭据，已抓取的历史邮件和账号 ID 均会完整保留。
 
-## 代理
+---
 
-设置页中的全局代理同时用于：
+## 🛡️ 生产环境部署 (Nginx + Systemd)
 
-- OAuth2 token 刷新；
-- Graph API 请求；
-- IMAP 连接；
-- GitHub Release 检查、更新包下载和更新依赖安装。
+建议在 Linux 生产环境中通过 Systemd 托管，并通过 Nginx 配置 HTTPS 反向代理。
 
-支持 `http://`、`socks4://`、`socks5://` 和 `socks5h://`。账号页面配置的专用代理优先于全局代理。页面明确保存空值表示直连，不会再次回退到 `OMM_PROXY`。
+### 1. 创建服务配置
 
-## 凭据和备份
+编辑 `/etc/systemd/system/outlook-mail-manager.service`：
+```ini
+[Unit]
+Description=Outlook Mail Manager
+After=network.target
 
-账号密码、client secret、refresh token 及代理凭据使用 Fernet 加密后写入 SQLite。密钥来源按优先级为：
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/outlook-mail-manager
+Environment="OMM_HOST=127.0.0.1"
+Environment="OMM_PORT=8899"
+Environment="OMM_SECURE_COOKIE=1"
+ExecStart=/opt/outlook-mail-manager/venv/bin/python app.py
+Restart=always
+RestartSec=5
 
-1. `OMM_SECRET_KEY`：必须是 32 个随机字节的 URL-safe Base64 Fernet key；
-2. `OMM_SECRET_KEY_FILE`：推荐用于部署；
-3. 数据库同目录的 `.omm_secret.key`。
-
-必须把数据库和密钥作为同一个备份集。只恢复 `data.db` 而没有原密钥时，服务会拒绝启动，避免静默生成新密钥造成凭据混用。
-
-```bash
-sudo systemctl stop outlook-mail-manager
-sudo tar -C /var/lib/outlook-mail-manager -czf omm-backup.tgz data.db secret.key
-sudo systemctl start outlook-mail-manager
+[Install]
+WantedBy=multi-user.target
 ```
 
-导出功能会返回 refresh token 明文，因此要求再次输入当前管理员密码，并设置 `Cache-Control: no-store`。
-
-## 生产部署
-
-不要直接把 Uvicorn 暴露到公网。应用默认启用 `Secure` Cookie，应由 Nginx/Caddy 提供 HTTPS，并只让应用监听回环地址。
-
-```bash
-sudo useradd --system --home /var/lib/outlook-mail-manager \
-  --shell /usr/sbin/nologin outlook-mail-manager
-sudo install -d -m 0700 -o outlook-mail-manager -g outlook-mail-manager \
-  /opt/outlook-mail-manager /var/lib/outlook-mail-manager
-sudo cp -a . /opt/outlook-mail-manager/
-sudo chown -R outlook-mail-manager:outlook-mail-manager /opt/outlook-mail-manager
-
-sudo -u outlook-mail-manager python3 -m venv /opt/outlook-mail-manager/venv
-sudo -u outlook-mail-manager /opt/outlook-mail-manager/venv/bin/pip \
-  install --require-hashes -r /opt/outlook-mail-manager/requirements.lock
-
-sudo install -m 0644 outlook-mail-manager.service /etc/systemd/system/
-sudo install -d -m 0750 /etc/outlook-mail-manager
-sudo sh -c 'umask 077; cat > /etc/outlook-mail-manager/env <<EOF
-OMM_ADMIN_PASSWORD=replace-with-a-long-random-password
-EOF'
-sudo systemctl daemon-reload
-sudo systemctl enable --now outlook-mail-manager
-```
-
-Nginx 示例：
+### 2. Nginx 反向代理配置
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name mail-manager.example.com;
+    server_name mail.yourdomain.com;
 
-    ssl_certificate     /etc/letsencrypt/live/mail-manager.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/mail-manager.example.com/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/mail.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mail.yourdomain.com/privkey.pem;
 
-    client_max_body_size 2m;
+    client_max_body_size 10m;
+
     location / {
         proxy_pass http://127.0.0.1:8899;
         proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
-应用使用跨进程单实例锁和数据库账号租约。不要配置 Gunicorn/Uvicorn 多 worker；扩展为多实例前需要重新设计后台调度与重启编排。
+---
 
-## 自动更新
+## ⚙️ 环境变量参考
 
-页面版本框在登录后请求 GitHub `releases/latest`。仅当 Release 的语义化版本高于本地 `VERSION` 时显示更新按钮。
+| 变量名 | 类型 | 说明 | 默认值 |
+|---|---|---|---|
+| `OMM_HOST` | 字符串 | 绑定的监听地址 | `127.0.0.1` |
+| `OMM_PORT` | 整数 | 监听端口 | `8899` |
+| `OMM_ADMIN_PASSWORD` | 字符串 | 首次创建数据库时的初始密码 | `admin123` |
+| `OMM_DB_PATH` | 路径 | SQLite 数据库存储路径 | `data.db` |
+| `OMM_SECRET_KEY_FILE` | 路径 | Fernet 凭据加密密钥文件路径 | `.omm_secret.key` |
+| `OMM_SECURE_COOKIE` | `0` / `1` | Cookie 是否强制 `Secure`（仅 HTTPS 传输） | 本地直连 `0` / 生产 `1` |
+| `OMM_CHECK_ORIGIN` | `0` / `1` | 是否开启 Origin 来源校验（已适配回环地址） | `1` |
+| `OMM_ALLOWED_ORIGINS` | 字符串 | 允许的反代来源白名单，以英文逗号分隔 | 空 |
+| `OMM_FETCH_CONCURRENCY`| 整数 | 批量并发取件线程池容量（1-20） | `5` |
+| `OMM_PROXY` | 字符串 | 默认全局中转代理地址 | 空 |
 
-更新器会验证：
+---
 
-- HTTPS、允许的 GitHub 下载域名、超时和重定向；
-- Ed25519 签名的版本清单及每个文件的 SHA-256；
-- ZIP 路径、符号链接、设备名、成员数和解压大小；
-- 目标版本必须严格高于当前版本。
-
-更新保留数据库、密钥、`.env`、现有 `venv`、日志和未知本地文件。依赖变化时会依据带哈希的 `requirements.lock` 构建独立的版本虚拟环境，不直接修改当前环境。源码更新使用持久化事务日志；进程中断后，下次启动会先恢复未完成更新。
-
-自动更新依赖正式 GitHub Release。只推送提交或 tag，不会被 `releases/latest` 发现。
-
-## 环境变量
-
-| 变量 | 说明 | 默认值 |
-|---|---|---|
-| `OMM_ADMIN_PASSWORD` | 可选的新数据库初始管理员密码，必须非空 | `admin123` |
-| `OMM_DB_PATH` | SQLite 数据库路径 | 项目目录 `data.db` |
-| `OMM_SECRET_KEY_FILE` | Fernet 密钥文件路径 | 数据库目录 `.omm_secret.key` |
-| `OMM_SECRET_KEY` | 32 字节随机 Fernet key 的 URL-safe Base64 | 无 |
-| `OMM_PROXY` | 未在页面保存设置时使用的全局代理 | 空 |
-| `OMM_FETCH_CONCURRENCY` | 批量取件/健康检测时同时处理的账号数（1-20） | `5` |
-| `OMM_MS_FETCH_MODE` | 新 Microsoft 账号默认模式：`graph`/`imap` | `graph` |
-| `OMM_AUTO_CHECK_HOURS` | 未在页面保存设置时的自动检测间隔 | `0` |
-| `OMM_MAX_REQUEST_BYTES` | POST/PUT/PATCH 请求体上限 | `2097152` |
-| `OMM_HOST` | 监听地址 | `127.0.0.1` |
-| `OMM_PORT` | 监听端口 | `8899` |
-| `OMM_SECURE_COOKIE` | Cookie 是否添加 `Secure` | `1` |
-| `OMM_CHECK_ORIGIN` | 是否启用 Origin 来源校验，个人直连可设为 `0` | `1` |
-| `OMM_ALLOWED_ORIGINS` | 反向代理对外地址白名单，多个地址用英文逗号分隔 | 空 |
-| `OMM_FORWARDED_ALLOW_IPS` | 信任的反向代理地址 | `127.0.0.1` |
-
-`OMM_SECURE_COOKIE=0` 只用于本机 HTTP 测试。
-
-## 测试与审计
+## 🧪 测试与质量验证
 
 ```bash
-python -m compileall -q .
-python -m pytest -q
+# 运行全部安全与功能单元测试
+pytest
+
+# 运行端到端离线冒烟测试
 python smoke_test.py
-ruff check .
-bandit -r app.py db.py mail_fetcher.py security.py update_manager.py web_security.py
-pip-audit -r requirements.txt
 ```
 
-详细审查记录见 `SECURITY_REVIEW.md`。
+---
+
+## 📄 开源许可证
+
+本项目基于 [MIT License](LICENSE) 开源。
