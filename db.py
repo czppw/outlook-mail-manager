@@ -982,7 +982,7 @@ async def add_account(
 
 async def get_accounts(
     page: int = 1,
-    per_page: int = 50,
+    per_page: int | None = 50,
     provider: str | None = None,
     status: str | None = None,
     fetch_mode: str | None = None,
@@ -1005,11 +1005,17 @@ async def get_accounts(
         params.append(f"%{keyword}%")
     clause = (" WHERE " + " AND ".join(where)) if where else ""
     async with _connection() as conn:
-        offset = (page - 1) * per_page
-        cursor = await conn.execute(
-            f"SELECT * FROM accounts{clause} ORDER BY id LIMIT ? OFFSET ?",
-            (*params, per_page, offset),
-        )
+        if per_page is None:
+            cursor = await conn.execute(
+                f"SELECT * FROM accounts{clause} ORDER BY id",
+                params,
+            )
+        else:
+            offset = (max(1, page) - 1) * per_page
+            cursor = await conn.execute(
+                f"SELECT * FROM accounts{clause} ORDER BY id LIMIT ? OFFSET ?",
+                (*params, per_page, offset),
+            )
         rows = await cursor.fetchall()
         cursor = await conn.execute(f"SELECT COUNT(*) FROM accounts{clause}", params)
         total = (await cursor.fetchone())[0]
@@ -1325,6 +1331,30 @@ async def enable_account(account_id: int):
 
 
 async def delete_account(account_id: int):
+    await delete_accounts([account_id])
+
+
+async def delete_accounts(account_ids: list[int]) -> int:
+    unique = list(dict.fromkeys(account_id for account_id in account_ids if account_id > 0))
+    if not unique:
+        return 0
+    deleted = 0
     async with _connection() as conn:
-        await conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+        for start in range(0, len(unique), 500):
+            chunk = unique[start : start + 500]
+            placeholders = ",".join("?" * len(chunk))
+            await conn.execute(
+                f"DELETE FROM emails WHERE account_id IN ({placeholders})",
+                chunk,
+            )
+            await conn.execute(
+                f"DELETE FROM account_leases WHERE account_id IN ({placeholders})",
+                chunk,
+            )
+            cursor = await conn.execute(
+                f"DELETE FROM accounts WHERE id IN ({placeholders})",
+                chunk,
+            )
+            deleted += max(0, cursor.rowcount)
         await conn.commit()
+    return deleted

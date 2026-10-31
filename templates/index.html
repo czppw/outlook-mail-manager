@@ -47,7 +47,7 @@
             <span class="stat-label">正常活跃</span>
         </div>
     </div>
-    <a href="/?status=error" class="stat-card tone-err" title="点击筛选异常账号">
+    <a href="/?status=error&amp;per_page={{ per_page }}" class="stat-card tone-err" title="点击筛选异常账号">
         <div class="stat-icon err">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
         </div>
@@ -82,6 +82,10 @@
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                 导出选中
             </button>
+            <button type="button" id="delete-selected" class="btn btn-sm btn-danger">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                删除选中
+            </button>
             <a href="/tokens" class="btn btn-sm">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                 令牌管理
@@ -107,6 +111,7 @@
             <option value="graph" {{ 'selected' if fetch_mode == 'graph' }}>Graph</option>
             <option value="imap" {{ 'selected' if fetch_mode == 'imap' }}>IMAP</option>
         </select>
+        <input type="hidden" name="per_page" value="{{ per_page }}">
         <input type="text" name="q" value="{{ q }}" placeholder="按邮箱地址快速搜索...">
         <button type="submit" class="btn btn-sm btn-primary">筛选</button>
         {% if qs %}<a href="/" class="btn btn-sm">重置</a>{% endif %}
@@ -237,22 +242,36 @@
     </table>
     </div>
 
-    {% if total_pages > 1 %}
     <div class="pagination">
+        <form method="get" action="/" class="page-size-form">
+            {% if provider %}<input type="hidden" name="provider" value="{{ provider }}">{% endif %}
+            {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+            {% if fetch_mode %}<input type="hidden" name="fetch_mode" value="{{ fetch_mode }}">{% endif %}
+            {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+            <label class="page-size">
+                每页显示
+                <select name="per_page" class="js-auto-submit" aria-label="每页显示数量">
+                    <option value="10" {{ 'selected' if per_page == '10' }}>10</option>
+                    <option value="50" {{ 'selected' if per_page == '50' }}>50</option>
+                    <option value="100" {{ 'selected' if per_page == '100' }}>100</option>
+                    <option value="500" {{ 'selected' if per_page == '500' }}>500</option>
+                    <option value="all" {{ 'selected' if per_page == 'all' }}>全部</option>
+                </select>
+            </label>
+        </form>
         {% if page > 1 %}
-            <a href="?page={{ page-1 }}{{ '&' + qs if qs }}" class="btn btn-sm">
+            <a href="?page={{ page - 1 }}&amp;{{ qs }}" class="btn btn-sm">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
                 上一页
             </a>
         {% endif %}
         <span style="font-weight: 500;">第 {{ page }} / {{ total_pages }} 页</span>
         {% if page < total_pages %}
-            <a href="?page={{ page+1 }}{{ '&' + qs if qs }}" class="btn btn-sm">
+            <a href="?page={{ page + 1 }}&amp;{{ qs }}" class="btn btn-sm">
                 下一页
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </a>
         {% endif %}
     </div>
-    {% endif %}
 </div>
 {% endblock %}
