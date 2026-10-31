@@ -277,6 +277,37 @@
         setTimeout(() => form.remove(), 1000);
     }
 
+    async function submitDeleteSelected(ids) {
+        if (!ids.length) {
+            toast("请先勾选要删除的账号", "err");
+            return;
+        }
+        const confirmed = await showConfirmModal(
+            "删除选中账号",
+            `确定删除选中的 ${ids.length} 个账号及其全部历史邮件？此操作不可恢复。`,
+            true
+        );
+        if (!confirmed) return;
+
+        const form = document.createElement("form");
+        form.method = "post";
+        form.action = "/accounts/delete";
+        form.hidden = true;
+        const fields = [
+            ["csrf_token", csrfToken()],
+            ["next", `${location.pathname}${location.search}`],
+        ];
+        for (const id of ids) fields.push(["account_id", id]);
+        for (const [name, value] of fields) {
+            const input = document.createElement("input");
+            input.name = name;
+            input.value = value;
+            form.appendChild(input);
+        }
+        document.body.appendChild(form);
+        form.submit();
+    }
+
     /* ============ Batch Action Bar ============ */
 
     function initBatchBar() {
@@ -298,6 +329,10 @@
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
                         导出选中
                     </button>
+                    <button type="button" class="btn btn-sm btn-danger" id="batch-delete-btn">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+                        删除选中
+                    </button>
                     <button type="button" class="btn btn-sm" id="batch-cancel-btn">取消选择</button>
                 </div>
             `;
@@ -306,6 +341,11 @@
             document.getElementById("batch-export-btn")?.addEventListener("click", () => {
                 const ids = [...document.querySelectorAll(".account-check:checked")].map(b => b.value);
                 submitExport(ids);
+            });
+
+            document.getElementById("batch-delete-btn")?.addEventListener("click", () => {
+                const ids = [...document.querySelectorAll(".account-check:checked")].map(b => b.value);
+                submitDeleteSelected(ids);
             });
 
             document.getElementById("batch-cancel-btn")?.addEventListener("click", () => {
@@ -554,6 +594,11 @@
         document.getElementById("export-selected")?.addEventListener("click", () => {
             const ids = [...document.querySelectorAll(".account-check:checked")].map((box) => box.value);
             submitExport(ids);
+        });
+
+        document.getElementById("delete-selected")?.addEventListener("click", () => {
+            const ids = [...document.querySelectorAll(".account-check:checked")].map((box) => box.value);
+            submitDeleteSelected(ids);
         });
 
         document.getElementById("export-all")?.addEventListener("click", () => {

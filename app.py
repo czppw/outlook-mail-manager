@@ -7,11 +7,12 @@ import hmac
 import logging
 import math
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta
 from typing import Annotated
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import aiosqlite
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -55,6 +56,13 @@ CHECK_ORIGIN = os.environ.get("OMM_CHECK_ORIGIN", "1").strip().lower() not in {
     "no",
 }
 AUTO_CHECK_DEFAULT_HOURS = float(os.environ.get("OMM_AUTO_CHECK_HOURS", "0"))
+
+PAGE_SIZE_OPTIONS = frozenset({10, 50, 100, 500})
+DEFAULT_PAGE_SIZE = 50
+MAX_DELETE_BATCH = 10_000
+_INDEX_QUERY_KEYS = frozenset(
+    {"page", "provider", "status", "fetch_mode", "q", "per_page"}
+)
 
 LOGIN_MAX_FAILS = 5
 LOGIN_FAIL_WINDOW_SECONDS = 300
@@ -471,6 +479,31 @@ async def _default_ms_fetch_mode() -> str:
     )
 
 
+def _normalize_page_size(raw: str) -> tuple[int | None, str]:
+    value = raw.strip().lower()
+    if value == "all":
+        return None, "all"
+    try:
+        size = int(value)
+    except ValueError:
+        size = DEFAULT_PAGE_SIZE
+    if size not in PAGE_SIZE_OPTIONS:
+        size = DEFAULT_PAGE_SIZE
+    return size, str(size)
+
+
+def _safe_index_target(target: str) -> str:
+    parsed = urlsplit(target.strip())
+    if parsed.scheme or parsed.netloc or parsed.path not in {"", "/"}:
+        return "/"
+    query = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=False)
+        if key in _INDEX_QUERY_KEYS and len(value) <= 200
+    ]
+    return f"/?{urlencode(query)}" if query else "/"
+
+
 def _with_token_days(accounts: list[dict]) -> list[dict]:
     now = datetime.now().astimezone()
     for account in accounts:
@@ -498,20 +531,34 @@ async def index(
     status: str = "",
     fetch_mode: str = "",
     q: str = "",
+    per_page: str = str(DEFAULT_PAGE_SIZE),
 ):
     page = max(1, page)
+    page_size, per_page_value = _normalize_page_size(per_page)
+    filters = {
+        "provider": provider or None,
+        "status": status or None,
+        "fetch_mode": fetch_mode or None,
+        "keyword": q.strip()[:200] or None,
+    }
     accounts, total = await db.get_accounts(
-        page=page,
-        per_page=50,
-        provider=provider or None,
-        status=status or None,
-        fetch_mode=fetch_mode or None,
-        keyword=q.strip()[:200] or None,
+        page=1 if page_size is None else page,
+        per_page=page_size,
+        **filters,
     )
+    if page_size is None:
+        page = 1
+        total_pages = 1
+    else:
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        if page > total_pages:
+            page = total_pages
+            accounts, total = await db.get_accounts(
+                page=page, per_page=page_size, **filters
+            )
     _with_token_days(accounts)
     stats = await db.get_stats()
     expiring = await db.get_expiring_accounts()
-    total_pages = max(1, (total + 49) // 50)
     query = urlencode(
         {
             key: value
@@ -520,6 +567,7 @@ async def index(
                 "status": status,
                 "fetch_mode": fetch_mode,
                 "q": q,
+                "per_page": per_page_value,
             }.items()
             if value
         }
@@ -538,6 +586,7 @@ async def index(
             "q": q,
             "qs": query,
             "page": page,
+            "per_page": per_page_value,
             "total_pages": total_pages,
             "total": total,
         },
@@ -808,6 +857,50 @@ async def toggle_account(
     if action == "delete":
         _account_locks.pop(account_id, None)
     return RedirectResponse("/", status_code=303)
+
+
+@app.post("/accounts/delete")
+async def delete_selected_accounts(
+    request: Request,
+    account_id: Annotated[list[int], Form()],
+    csrf_token: str = Form(...),
+    return_to: Annotated[str, Form(alias="next")] = "/",
+):
+    _require_csrf(request, csrf_token)
+    selected = sorted({value for value in account_id if value > 0})
+    if not selected:
+        raise HTTPException(status_code=400, detail="No accounts selected")
+    if len(selected) > MAX_DELETE_BATCH:
+        raise HTTPException(status_code=413, detail="Too many accounts selected")
+
+    held: list[tuple[int, str]] = []
+    try:
+        for current_id in selected:
+            lock = _account_lock(current_id)
+            await lock.acquire()
+            try:
+                lease = await db.acquire_account_lease(current_id)
+            except sqlite3.IntegrityError:
+                lock.release()
+                continue
+            except Exception:
+                lock.release()
+                raise
+            if lease is None:
+                lock.release()
+                continue
+            held.append((current_id, lease))
+        if held:
+            await _run_critical(
+                db.delete_accounts([current_id for current_id, _lease in held])
+            )
+    finally:
+        for current_id, lease in held:
+            await asyncio.shield(db.release_account_lease(current_id, lease))
+            lock = _account_locks.pop(current_id, None)
+            if lock is not None and lock.locked():
+                lock.release()
+    return RedirectResponse(_safe_index_target(return_to), status_code=303)
 
 
 @app.post("/account/{account_id}/refresh-token")
